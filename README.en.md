@@ -19,25 +19,25 @@ local state mix. Each account has its own device fingerprint, sign-in
 credentials, and application data; switching swaps those directories atomically
 instead of signing out and back in.
 
-Before Claude starts, the app runs a 14-point audit of the machine's network and
+Before Claude starts, the app runs a 13-point audit of the machine's network and
 regional environment. If a blocking check fails, the app is not launched. A
 resident bodyguard stops the protected application when the tunnel drops,
 closing the window in which traffic could leave outside the proxy.
 
 ## Features
 
-- **14-point preflight audit** — proxy core, TUN interface, exit country, IP stability, time zone, locale, IPv6, DNS leakage, WebRTC candidates, bodyguard status, pinned routing, browser language, ASN type, and Claude reachability.
+- **13-point preflight audit** — proxy core, TUN interface, exit country, IP stability, locale, IPv6, DNS leakage, WebRTC candidates, bodyguard status, pinned routing, browser language, ASN type, and Claude reachability.
 - **Snapshot switching** — archives and restores whole account directories; APFS copy-on-write cloning avoids duplicating unchanged data.
 - **Fail-closed bodyguard** — checks the proxy kernel and virtual interface every ten seconds and terminates protected processes when the tunnel is lost.
-- **Drift watchdog** — records a baseline for time zone and proxy settings and rolls back silent changes made by other software.
+- **Configuration repair** — the bodyguard checks proxy health; one-click repair restores supported proxy settings.
 - **Multiple proxy clients** — detects Clash Verge, Shadowrocket, sing-box, ClashX, and Surge, with an automatic mode; non-Clash clients keep their own configuration.
-- **Region adaptation** — captures the exit country, time zone, and locale at install time and re-locks all three after moving to a different node.
+- **Region adaptation** — captures the exit country and locale at install time and re-locks both after moving to a different node.
 - **Pinned routing** — places Claude domains and supporting services above third-party rule sets.
 - **WebRTC leak probe** — a standard-library STUN client that compares global and local vantage points to distinguish a proxied path from a direct one.
 - **Automatic updates** — a user-level launchd agent checks every 12 hours, verifies artifact hashes, and rolls back if the post-update self-check fails.
 - **Diagnostics** — a standalone proxy check reports transport results for the Claude web and API endpoints without reading account data.
 - **Native menu bar UI** — a single-file SwiftUI app with no Xcode project and no third-party dependencies.
-- **Web check page** — a static browser-side check for exit IP, time zone, language, WebRTC, IPv6, and common fingerprint signals.
+- **Web check page** — a static browser-side check for exit IP, language, WebRTC, IPv6, and common fingerprint signals.
 - **Windows and Linux ports (beta)** — PowerShell and bash implementations with the same audit and switching model.
 
 ## Install
@@ -79,7 +79,7 @@ Artifacts are written to `build/`.
 
 ## Usage
 
-1. Open **Claude切换器** and wait for the 14 checks.
+1. Open **Claude切换器** and wait for the 13 checks.
 2. If everything is green, choose an account and launch Claude. If a blocking
    check is red, use the one-click repair action.
 3. Sign in once for each additional account; later switches keep sessions

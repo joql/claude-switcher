@@ -90,7 +90,7 @@ $win = [Windows.Markup.XamlReader]::Load($reader)
 $rows = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
 $win.FindName('CheckList').ItemsSource = $rows
 
-$checkNames = @('代理内核','TUN网卡','出口IP','IP一致','时区','地区','IPv6','DNS','WebRTC','保镖','规则置顶','客户端语言','ASN属性','生态可达性')
+$checkNames = @('代理内核','TUN网卡','出口IP','IP一致','地区','IPv6','DNS','WebRTC','保镖','规则置顶','客户端语言','ASN属性','生态可达性')
 
 function Set-Status($text, $color) {
     $win.FindName('StatusText').Text = $text
@@ -98,7 +98,7 @@ function Set-Status($text, $color) {
 }
 
 function Invoke-Core([string[]]$coreArgs) {
-    # checkdetail 改从落盘的 last-check.txt(UTF-8)读取:子进程 stdout 经控制台代码页(如 GBK/936)转码会把中文键名弄乱,导致 14 项只匹配 3 项
+    # checkdetail 改从落盘的 last-check.txt(UTF-8)读取:子进程 stdout 经控制台代码页(如 GBK/936)转码会把中文键名弄乱,导致 13 项只匹配 3 项
     if ($coreArgs[0] -eq 'checkdetail') {
         & powershell -NoProfile -ExecutionPolicy Bypass -File $CORE @coreArgs 2>$null | Out-Null
         return ((Get-Content "$BASE\last-check.txt" -Encoding UTF8) -join "`n").Trim()

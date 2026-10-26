@@ -9,7 +9,7 @@
 | # | 检测项 | 内容 | 判定 |
 |---|---|---|---|
 | 01 | 出口 IP / 归属 | `ipinfo.io/json` 优先；失败回退 `www.cloudflare.com/cdn-cgi/trace` | 成功 `ok`；仅兜底成功 `warn`；全部失败 `fail` |
-| 02 | 地区一致性 | 浏览器时区、UTC 偏移、`navigator.language(s)` 与出口国家比对 | 时区不符、语言不符或缺少出口时区 `warn`；国家无语言映射时仅展示 |
+| 02 | 地区一致性 | `navigator.language(s)` 与出口国家比对 | 语言不符 `warn`；国家无语言映射时仅展示 |
 | 03 | WebRTC 泄漏 | 通过 Google / Cloudflare STUN 收集候选，解析 `srflx` / `relay` 等公网地址并与出口 IP 比对 | 仅出口 IP 或 mDNS 混淆 `ok`；额外公网 IP `fail`；无候选 `warn` |
 | 04 | IPv6 暴露 | `api6.ipify.org` 3 秒超时探测，必要时用 ipinfo 查询 IPv6 归属 | 不可达 `ok`；可直连且归属不似代理 `fail`；归属看似代理或未知 `warn` |
 | 05 | DNS 泄漏（近似） | 并行请求 `1.1.1.1/cdn-cgi/trace` 与 `dns.google/resolve` | 均为可达 `ok`，否则 `warn`；不做 `fail` |
@@ -50,9 +50,9 @@ python3 -m http.server 8000 --directory web
 
 ## 能力边界
 
-- 只评估**浏览器侧**信号，不替代桌面版的 14 项审计。
+- 只评估**浏览器侧**信号，不替代桌面版的 13 项审计。
 - 不检测 TUN 网卡、Kill-Switch 保镖、进程级泄漏、系统路由表、系统 DNS 配置、系统代理内核。
-- 地区一致性只读浏览器时区与语言，不代表系统全部区域设置。
+- 地区一致性只读浏览器语言，不代表系统全部区域设置。
 - DNS 项是近似检测：浏览器无法读取系统 DNS，DoH 可达不能证明系统 DNS 未泄漏，建议配合桌面版 Fake-IP / DNS 隧道校验。
 - WebRTC / IPv6 结果会受浏览器策略、代理是否接管 UDP、节点是否支持 IPv6 影响。
 - 页面不做任何自动修复，也不绕过任何服务条款。

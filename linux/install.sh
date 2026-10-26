@@ -77,11 +77,9 @@ if [ -z "$CTRY" ]; then
 fi
 echo "✓ 出口: $(echo "$INFO" | grep '"ip"' | cut -d'"' -f4) ($CTRY)"
 
-# ---- 地区自适应(按出口IP自动锁定 国家/时区/地区格式 三件套) ----
-TZV=$(echo "$INFO" | grep '"timezone"' | cut -d'"' -f4)
-[ -z "$TZV" ] && TZV="America/New_York"
+# ---- 地区自适应(按出口IP自动锁定 国家/地区格式) ----
 LOCALE=$(locale_for "$CTRY")
-echo "✓ 地区自适应: 国家=$CTRY 时区=$TZV 地区格式=$LOCALE"
+echo "✓ 地区自适应: 国家=$CTRY 地区格式=$LOCALE"
 
 # ---- 自动识别代理组名(仅 Clash Verge;多个 select 组时让用户选,避免静默选错专线) ----
 GRP=""
@@ -124,7 +122,6 @@ sed -i \
     -e "s|^PROXY_MODE=\".*\"|PROXY_MODE=\"$MODE\"|" \
     -e "s|^PROXY_GROUP=\".*\"|PROXY_GROUP=\"$GRP\"|" \
     -e "s|^COUNTRY_TARGET=\".*\"|COUNTRY_TARGET=\"$CTRY\"|" \
-    -e "s|^TZ_TARGET=\".*\"|TZ_TARGET=\"$TZV\"|" \
     -e "s|^LOCALE_TARGET=\".*\"|LOCALE_TARGET=\"$LOCALE\"|" \
     "$BASE/claude-switch.sh"
 # 保镖按识别的客户端分派判定(__PROXY_MODE__ 占位符替换)
@@ -163,10 +160,9 @@ systemctl --user enable --now claude-bodyguard.service >/dev/null 2>&1 \
     && echo "✓ 保镖已注册并启动(systemd 用户服务,登录自启)" \
     || echo "✗ 保镖注册失败,可稍后用 fix 自动补装"
 
-# ---- 时区与 IPv6(需要 sudo) ----
+# ---- IPv6(需要 sudo) ----
 echo ""
-echo "接下来需要 sudo 密码: 锁定时区($TZV) + 关闭 IPv6"
-sudo timedatectl set-timezone "$TZV" && echo "✓ 时区已锁定"
+echo "接下来需要 sudo 密码: 关闭 IPv6"
 sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null && echo "✓ IPv6 已关闭(运行时)"
 echo "net.ipv6.conf.all.disable_ipv6=1" | sudo tee /etc/sysctl.d/90-claude-switcher.conf >/dev/null \
     && echo "✓ IPv6 关闭已持久化(/etc/sysctl.d/90-claude-switcher.conf)"

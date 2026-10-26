@@ -532,7 +532,6 @@ fi
 PROXY_MODE="clash-verge"       # 代理客户端: clash-verge|shadowrocket|sing-box|clashx|surge|auto
 PROXY_GROUP="IpEqual"          # Clash 代理组名(安装时自动探测)
 COUNTRY_TARGET="US"            # 目标出口国家(安装时按出口自动识别)
-TZ_TARGET="America/New_York"   # 锁定时区,应与出口IP所在城市一致
 LOCALE_TARGET="en_US"          # 锁定地区格式
 # ============================================================
 
@@ -670,8 +669,6 @@ check() {
         ipwarn="${ipwarn:+$ipwarn; }注意:48h内出口IP变化${ipn}次,账号画像有风险,建议固定节点"
     fi
 
-    tz=$(readlink /etc/localtime 2>/dev/null)
-    [ "$tz" = "/var/db/timezone/zoneinfo/$TZ_TARGET" ] || fails="$fails;时区异常($tz)"
 
     locale=$(defaults read -g AppleLocale 2>/dev/null)
     [ "$locale" = "$LOCALE_TARGET" ] || fails="$fails;地区异常($locale)"
@@ -799,8 +796,6 @@ checkdetail() {
         fi
         if [ -z "$ipdt" ]; then echo "IP一致=$ipst"; else echo "IP一致=$ipst:$ipdt"; fi
     fi
-    tz=$(readlink /etc/localtime 2>/dev/null)
-    if [ "$tz" = "/var/db/timezone/zoneinfo/$TZ_TARGET" ]; then echo '时区=ok'; else echo "时区=fail:$tz"; fi
     locale=$(defaults read -g AppleLocale 2>/dev/null)
     if [ "$locale" = "$LOCALE_TARGET" ]; then echo '地区=ok'; else echo "地区=fail:$locale"; fi
     v6=$(networksetup -getinfo Wi-Fi 2>/dev/null | grep -i '^IPv6:')
@@ -833,7 +828,7 @@ checkdetail() {
             echo "规则置顶=fail:未命中(${ROUTE_MISSED# }),请在 $(proxy_name) 中自行加置顶规则"
         fi
     fi
-    # 12. Claude 客户端语言(单独设为英文,或系统首选语言为英文均可;防止 JS 层读出中文)
+    # 11. Claude 客户端语言(单独设为英文,或系统首选语言为英文均可;防止 JS 层读出中文)
     clang=$(defaults read com.anthropic.claudefordesktop AppleLanguages 2>/dev/null | head -2)
     syslang=$(defaults read -g AppleLanguages 2>/dev/null | sed -n '2p' | tr -d ' ,"')
     if echo "$clang" | grep -q 'en-US'; then
@@ -843,7 +838,7 @@ checkdetail() {
     else
         echo '客户端语言=fail:跟随系统(中文)'
     fi
-    # 13. ASN 网络属性(住宅宽带 vs 机房,按目标地区收录主流运营商)
+    # 12. ASN 网络属性(住宅宽带 vs 机房,按目标地区收录主流运营商)
     org=$(curl -s --max-time 6 https://ipinfo.io/json 2>/dev/null | grep '"org"' | cut -d'"' -f4)
     case "$org" in
         '') echo 'ASN属性=warn:未获取' ;;
@@ -856,7 +851,7 @@ checkdetail() {
         *Deutsche\ Telekom*|*1\&1*|*O2*) echo "ASN属性=ok:$org" ;;
         *) echo "ASN属性=warn:疑似机房($org)" ;;
     esac
-    # 14. Anthropic 生态可达性
+    # 13. Anthropic 生态可达性
     r1=$(curl -s --max-time 8 -o /dev/null -w '%{http_code}' https://claude.ai/ 2>/dev/null)
     r2=$(curl -s --max-time 8 -o /dev/null -w '%{http_code}' https://api.anthropic.com/v1/models 2>/dev/null)
     if [ "$r1" != "000" ] && [ "$r2" != "000" ]; then
@@ -929,28 +924,26 @@ fix() {
         fi
     fi
 
-    # B. 时区/IPv6/DNS缓存/保镖(需管理员权限,会弹一次密码框)
-    tz=$(readlink /etc/localtime 2>/dev/null)
+    # B. IPv6/DNS缓存/保镖(需管理员权限,会弹一次密码框)
     v6=$(networksetup -getinfo Wi-Fi 2>/dev/null | grep -i '^IPv6:')
     adminCmds=""
-    [ "$tz" != "/var/db/timezone/zoneinfo/$TZ_TARGET" ] && adminCmds="${adminCmds}/usr/sbin/systemsetup -settimezone $TZ_TARGET; "
     echo "$v6" | grep -qi 'off' || adminCmds="${adminCmds}networksetup -setv6off Wi-Fi; "
     if ! launchctl print system/local.claude-bodyguard >/dev/null 2>&1; then
         adminCmds="${adminCmds}cp $HOME/.local/bin/local.claude-bodyguard.plist /Library/LaunchDaemons/ && chown root:wheel /Library/LaunchDaemons/local.claude-bodyguard.plist && launchctl bootstrap system /Library/LaunchDaemons/local.claude-bodyguard.plist; "
     fi
     if [ -n "$adminCmds" ]; then
         adminCmds="${adminCmds}dscacheutil -flushcache; killall -HUP mDNSResponder"
-        echo "FIX:修复时区/IPv6/DNS/保镖(需要密码)..."
+        echo "FIX:修复IPv6/DNS/保镖(需要密码)..."
         if osascript <<ASEOF >/dev/null 2>&1
 do shell script "$adminCmds" with prompt "一键修复需要管理员权限" with administrator privileges
 ASEOF
         then
-            echo "FIX:时区/IPv6/DNS/保镖 ✓"
+            echo "FIX:IPv6/DNS/保镖 ✓"
         else
-            echo "FIX:时区/IPv6/保镖 ✗(取消或失败)"
+            echo "FIX:IPv6/保镖 ✗(取消或失败)"
         fi
     else
-        echo "FIX:时区/IPv6/保镖 无需修复 ✓"
+        echo "FIX:IPv6/保镖 无需修复 ✓"
     fi
 
     # B3. Claude 客户端单独设英文(用户级,无需密码;系统首选语言已是英文则跳过)
@@ -1019,54 +1012,32 @@ ASEOF
     return "$fix_failed"
 }
 
-# 地区自适应:按当前出口国家一键重设 国家/时区/地区格式(换了国家节点后运行)
+# 地区自适应:按当前出口国家一键重设 国家/地区格式(换了国家节点后运行)
 set_region() {
     trace=$(curl -s --max-time 8 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
     loc=$(echo "$trace" | grep '^loc=' | cut -d= -f2)
     [ -z "$loc" ] && { echo "FAIL:无法获取出口国家(cloudflare trace 无结果,请先挂代理)"; return 1; }
     info=$(curl -s --max-time 8 https://ipinfo.io/json 2>/dev/null)
     ctry=$(echo "$info" | grep '"country"' | cut -d'"' -f4)
-    ntz=$(echo "$info" | grep '"timezone"' | cut -d'"' -f4)
-    if [ -z "$ctry" ] || [ -z "$ntz" ]; then
-        echo "FAIL:ipinfo 未返回国家或时区"; return 1
+    if [ -z "$ctry" ]; then
+        echo "FAIL:ipinfo 未返回国家"; return 1
     fi
     if [ "$loc" != "$ctry" ]; then
         echo "FAIL:出口国家不一致(cloudflare=$loc ipinfo=$ctry),已中止"; return 1
     fi
     nlocale=$(locale_for "$ctry")
 
-    # 改写脚本自身头部三个配置项
+    # 改写脚本自身头部两个配置项
     sed -i '' \
         -e "s|^COUNTRY_TARGET=\".*\"|COUNTRY_TARGET=\"$ctry\"|" \
-        -e "s|^TZ_TARGET=\".*\"|TZ_TARGET=\"$ntz\"|" \
         -e "s|^LOCALE_TARGET=\".*\"|LOCALE_TARGET=\"$nlocale\"|" \
         "$0"
-    COUNTRY_TARGET="$ctry"; TZ_TARGET="$ntz"; LOCALE_TARGET="$nlocale"
+    COUNTRY_TARGET="$ctry"; LOCALE_TARGET="$nlocale"
 
     # 地区格式(用户级,无需密码)
     defaults write -g AppleLocale "$nlocale"
 
-    # 时区(需管理员权限,会弹一次授权框);看门狗脚本在 root 目录下,顺道用同一次授权同步目标值
-    WD="/Library/Application Support/claude-switcher/tz-watchdog.sh"
-    adminCmds="/usr/sbin/systemsetup -settimezone $ntz"
-    wdsync=0
-    if [ -f "$WD" ] && [ ! -w "$WD" ]; then
-        adminCmds="$adminCmds; /usr/bin/sed -i '' 's|^TARGET=.*|TARGET=$ntz|' '$WD'"
-        wdsync=1
-    fi
-    if ! osascript <<ASEOF >/dev/null 2>&1
-do shell script "$adminCmds" with prompt "set-region 需要管理员权限以锁定时区" with administrator privileges
-ASEOF
-    then
-        echo "FAIL:时区设置被取消或失败(国家/地区格式已更新为 $ctry/$nlocale)"
-        return 1
-    fi
-    # 看门狗目标同步兜底(可写的老版本安装直接 sed;失败则提示运行安装器刷新)
-    if [ -f "$WD" ] && [ "$wdsync" -eq 0 ]; then
-        sed -i '' "s|^TARGET=.*|TARGET=$ntz|" "$WD" 2>/dev/null || echo "WARN:看门狗目标未同步,请运行安装器刷新"
-    fi
-
-    echo "OK:region=$loc tz=$ntz locale=$nlocale"
+    echo "OK:region=$loc locale=$nlocale"
 }
 
 # 自动更新:拉取 main 分支最新代码,SHA256 校验+配置注入+自检+失败回滚
@@ -1131,30 +1102,30 @@ self_update() {
     # 备份现有核心脚本
     [ -f "$BIN/claude-switch.sh" ] && cp "$BIN/claude-switch.sh" "$BIN/claude-switch.sh.bak"
 
-    # 替换核心脚本 + 从 .bak 读出5个配置值注入新脚本
+    # 替换核心脚本 + 从 .bak 读出4个配置值注入新脚本
     cp "$NEW/core/claude-switch.sh" "$BIN/claude-switch.sh"
-    PM=""; PG=""; CT=""; TZV=""; LCT=""
+    PM=""; PG=""; CT=""; LCT=""
     if [ -f "$BIN/claude-switch.sh.bak" ]; then
         get_cfg() { grep "^$1=\"" "$BIN/claude-switch.sh.bak" | head -1 | cut -d'"' -f2; }
         PM=$(get_cfg PROXY_MODE); PG=$(get_cfg PROXY_GROUP); CT=$(get_cfg COUNTRY_TARGET)
-        TZV=$(get_cfg TZ_TARGET); LCT=$(get_cfg LOCALE_TARGET)
+        LCT=$(get_cfg LOCALE_TARGET)
         inject_cfg() { grep -q "^$1=\"" "$BIN/claude-switch.sh.bak" && sed -i '' "s|^$1=\".*\"|$1=\"$2\"|" "$BIN/claude-switch.sh"; }
         inject_cfg PROXY_MODE "$PM"; inject_cfg PROXY_GROUP "$PG"; inject_cfg COUNTRY_TARGET "$CT"
-        inject_cfg TZ_TARGET "$TZV"; inject_cfg LOCALE_TARGET "$LCT"
+        inject_cfg LOCALE_TARGET "$LCT"
     fi
     chmod +x "$BIN/claude-switch.sh"
 
     # 守护进程脚本(root 所有,用户态不可写):与远程模板比对,有差异只提示不自动改
     APPDIR="/Library/Application Support/claude-switcher"
-    if [ -f "$APPDIR/claude-bodyguard.sh" ] || [ -f "$APPDIR/tz-watchdog.sh" ]; then
+    if [ -f "$APPDIR/claude-bodyguard.sh" ]; then
         [ -z "$PM" ] && PM="clash-verge"
-        [ -z "$TZV" ] && TZV="America/New_York"
         sed -e "s|__HOME__|$UHOME|g" -e "s|__PROXY_MODE__|$PM|g" "$NEW/daemons/claude-bodyguard.sh" > "$tmpd/bg.new"
-        sed -e "s|__HOME__|$UHOME|g" -e "s|__TZ_TARGET__|$TZV|g" "$NEW/daemons/tz-watchdog.sh" > "$tmpd/tz.new"
-        if ! diff -q "$tmpd/bg.new" "$APPDIR/claude-bodyguard.sh" >/dev/null 2>&1 || \
-           ! diff -q "$tmpd/tz.new" "$APPDIR/tz-watchdog.sh" >/dev/null 2>&1; then
+        if ! diff -q "$tmpd/bg.new" "$APPDIR/claude-bodyguard.sh" >/dev/null 2>&1; then
             echo "INFO:守护进程脚本有更新,请运行 installer/安装.command 刷新(需要密码)"
         fi
+    fi
+    if [ -f /Library/LaunchDaemons/local.tz-watchdog.plist ]; then
+        echo "INFO:旧时区看门狗仍可能运行,请重跑 installer/安装.command 移除"
     fi
     rm -rf "$tmpd"
 

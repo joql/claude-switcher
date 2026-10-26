@@ -6,7 +6,6 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 # ============ 安装时可配置项(安装器自动改写) ============
 $PROXY_MODE = "clash-verge"            # 代理客户端: clash-verge|sing-box|clashx|surge|wireguard|other|auto
 $COUNTRY_TARGET = "US"                 # 目标出口国家(安装时按出口自动识别)
-$TZ_TARGET = "Eastern Standard Time"   # Windows 时区ID
 $PROXY_GROUP = "GLOBAL"                # Clash 代理组名
 # =======================================================
 
@@ -144,8 +143,6 @@ function Invoke-CheckDetail {
     else { "IP一致=warn:$lastip → $($e.ip)" }
     if ($e.ip) { $e.ip | Out-File -Encoding ascii -NoNewline $lastipFile }
 
-    $tz = (Get-TimeZone).Id
-    if ($tz -eq $TZ_TARGET) { "时区=ok" } else { "时区=fail:$tz" }
 
     $cult = (Get-Culture).Name
     if ($cult -eq 'en-US') { "地区=ok" } else { "地区=fail:$cult" }
@@ -198,23 +195,22 @@ function Invoke-Fix {
         else { "FIX:TUN 未在线($pname),请检查客户端 TUN 开关" }
     }
 
-    # B. 时区/IPv6/DNS/保镖(需管理员:通过 UAC 弹一次)
+    # B. IPv6/DNS/保镖(需管理员:通过 UAC 弹一次)
     $adminScript = @()
-    if ((Get-TimeZone).Id -ne $TZ_TARGET) { $adminScript += "Set-TimeZone -Id '$TZ_TARGET'" }
     if (Get-NetAdapterBinding -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue | Where-Object { $_.Enabled }) { $adminScript += "Get-NetAdapterBinding -ComponentID ms_tcpip6 | Disable-NetAdapterBinding -Confirm:`$false" }
     $adminScript += "Clear-DnsClientCache"
     if (-not (Get-ScheduledTask -TaskName 'ClaudeBodyguard' -ErrorAction SilentlyContinue)) {
         $adminScript += "`$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$BASE\claude-bodyguard.ps1`"'; `$t = New-ScheduledTaskTrigger -AtLogOn; Register-ScheduledTask -TaskName 'ClaudeBodyguard' -Action `$a -Trigger `$t -Force | Out-Null; Start-ScheduledTask -TaskName 'ClaudeBodyguard'"
     }
     if ($adminScript.Count -gt 0) {
-        "FIX:修复时区/IPv6/DNS/保镖(需要管理员授权)..."
+        "FIX:修复IPv6/DNS/保镖(需要管理员授权)..."
         $tmp = "$env:TEMP\claude-fix-$([guid]::NewGuid().Guid).ps1"
         ($adminScript -join "`n") | Out-File -Encoding utf8 $tmp
         try { Start-Process powershell -Verb RunAs -Wait -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tmp`"" } catch { "FIX:管理员授权被取消" }
         Remove-Item $tmp -ErrorAction SilentlyContinue
-        "FIX:时区/IPv6/DNS/保镖 ✓"
+        "FIX:IPv6/DNS/保镖 ✓"
     } else {
-        "FIX:时区/IPv6/保镖 无需修复 ✓"
+        "FIX:IPv6/保镖 无需修复 ✓"
     }
 
     # B2. 置顶规则(仅 Clash Verge 可自动改写)

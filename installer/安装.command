@@ -88,14 +88,14 @@ if [ "$MODE" = "clash-verge" ]; then
     echo "✓ 代理组: $GRP"
 fi
 
-# ---- 2. 地区自适应(按出口IP自动锁定 国家/时区/地区格式;必须先挂代理) ----
+# ---- 2. 地区自适应(按出口IP自动锁定 国家/地区格式;必须先挂代理) ----
 IPINFO=$(curl -fs --max-time 20 --retry 2 --retry-all-errors https://ipinfo.io/json 2>/dev/null)
 CTRY=$(echo "$IPINFO" | grep '"country"' | cut -d'"' -f4)
 if [ "$CTRY" = "CN" ] && [ -z "$FORCE" ]; then
     echo ""
     echo "❌ 检测到当前出口在国内(国家: CN)。"
     echo "   请先在代理客户端里开启代理(TUN模式)并确认节点可用,再运行本安装程序。"
-    echo "   (否则时区/地区会被错误锁定)"
+    echo "   (否则地区会被错误锁定)"
     read -n 1 -s -r -p "按任意键退出..."; exit 1
 fi
 if [ -z "$CTRY" ]; then
@@ -103,10 +103,8 @@ if [ -z "$CTRY" ]; then
     [ -z "$FORCE" ] && { read -n 1 -s -r -p "按任意键退出..."; exit 1; }
     CTRY="US"
 fi
-TZV=$(echo "$IPINFO" | grep '"timezone"' | cut -d'"' -f4)
-[ -z "$TZV" ] && TZV="America/New_York"
 LOCALE=$(locale_for "$CTRY")
-echo "✓ 地区自适应: 国家=$CTRY 时区=$TZV 地区格式=$LOCALE (按当前出口IP自动识别)"
+echo "✓ 地区自适应: 国家=$CTRY 地区格式=$LOCALE (按当前出口IP自动识别)"
 
 # ---- 3. 安装文件 ----
 mkdir -p "$H/.local/bin" "$H/.claude-switcher" "$H/Library/Logs"
@@ -118,23 +116,21 @@ sed -i '' \
     -e "s|^PROXY_MODE=\".*\"|PROXY_MODE=\"$MODE\"|" \
     -e "s|^PROXY_GROUP=\".*\"|PROXY_GROUP=\"$GRP\"|" \
     -e "s|^COUNTRY_TARGET=\".*\"|COUNTRY_TARGET=\"$CTRY\"|" \
-    -e "s|^TZ_TARGET=\".*\"|TZ_TARGET=\"$TZV\"|" \
     -e "s|^LOCALE_TARGET=\".*\"|LOCALE_TARGET=\"$LOCALE\"|" \
     "$H/.local/bin/claude-switch.sh"
 
-# 保镖/时区看门狗脚本:物化到临时目录,由 sudo 段装入 root 所有的系统目录(用户态不可写,防提权)
+# 保镖脚本:物化到临时目录,由 sudo 段装入 root 所有的系统目录(用户态不可写,防提权)
 STAGE=$(mktemp -d)
 sed -e "s|__HOME__|$H|g" -e "s|__PROXY_MODE__|$MODE|g" \
     "$REPO/daemons/claude-bodyguard.sh" > "$STAGE/claude-bodyguard.sh"
-sed -e "s|__HOME__|$H|g" -e "s|__TZ_TARGET__|$TZV|g" \
-    "$REPO/daemons/tz-watchdog.sh" > "$STAGE/tz-watchdog.sh"
-chmod +x "$STAGE/claude-bodyguard.sh" "$STAGE/tz-watchdog.sh"
+chmod +x "$STAGE/claude-bodyguard.sh"
 # 清理旧版本装在用户目录下的守护脚本(用户可写=提权面)
 rm -f "$H/.local/bin/claude-bodyguard.sh" "$H/.local/bin/tz-watchdog.sh" \
-      "$H/.local/bin/claude-bodyguard.sh.bak" "$H/.local/bin/tz-watchdog.sh.bak"
+      "$H/.local/bin/claude-bodyguard.sh.bak" "$H/.local/bin/tz-watchdog.sh.bak" \
+      "$H/.local/bin/local.tz-watchdog.plist"
 
-# launchd 配置(保镖/看门狗的 ProgramArguments 已指向系统目录,直接拷贝;自动更新为 LaunchAgent)
-cp "$REPO/daemons/local.claude-bodyguard.plist" "$REPO/daemons/local.tz-watchdog.plist" "$H/.local/bin/"
+# launchd 配置(保镖的 ProgramArguments 已指向系统目录,直接拷贝;自动更新为 LaunchAgent)
+cp "$REPO/daemons/local.claude-bodyguard.plist" "$H/.local/bin/"
 sed "s|__HOME__|$H|g" "$REPO/daemons/local.claude-update.plist" > "$H/.local/bin/local.claude-update.plist"
 echo "✓ 核心文件已安装"
 
@@ -204,29 +200,27 @@ else
     echo "    intercom.io / intercomcdn.com / intercomassets.com"
 fi
 
-# ---- 6. 系统级配置(需要一次密码;时区/IPv6 已是目标值则跳过对应命令) ----
+# ---- 6. 系统级配置(需要一次密码;IPv6 已是目标值则跳过对应命令) ----
 if [ -n "$DRYRUN" ]; then
-    echo "[演练模式] 跳过系统级配置(守护进程/时区/IPv6)"
+    echo "[演练模式] 跳过系统级配置(守护进程/IPv6)"
     rm -rf "$STAGE"
 else
     # 守护脚本装入 root 所有的系统目录;同时清理旧版的 root 级自动更新(已改为用户态 LaunchAgent)
     SYSCMDS="mkdir -p '/Library/Application Support/claude-switcher';
-        cp '$STAGE/claude-bodyguard.sh' '$STAGE/tz-watchdog.sh' '/Library/Application Support/claude-switcher/';
-        chown root:wheel '/Library/Application Support/claude-switcher/claude-bodyguard.sh' '/Library/Application Support/claude-switcher/tz-watchdog.sh';
-        chmod 755 '/Library/Application Support/claude-switcher/claude-bodyguard.sh' '/Library/Application Support/claude-switcher/tz-watchdog.sh';
-        cp '$H/.local/bin/local.claude-bodyguard.plist' '$H/.local/bin/local.tz-watchdog.plist' /Library/LaunchDaemons/;
-        chown root:wheel /Library/LaunchDaemons/local.claude-bodyguard.plist /Library/LaunchDaemons/local.tz-watchdog.plist;
-        chmod 644 /Library/LaunchDaemons/local.claude-bodyguard.plist /Library/LaunchDaemons/local.tz-watchdog.plist;
+        cp '$STAGE/claude-bodyguard.sh' '/Library/Application Support/claude-switcher/';
+        chown root:wheel '/Library/Application Support/claude-switcher/claude-bodyguard.sh';
+        chmod 755 '/Library/Application Support/claude-switcher/claude-bodyguard.sh';
+        cp '$H/.local/bin/local.claude-bodyguard.plist' /Library/LaunchDaemons/;
+        chown root:wheel /Library/LaunchDaemons/local.claude-bodyguard.plist;
+        chmod 644 /Library/LaunchDaemons/local.claude-bodyguard.plist;
         launchctl bootout system/local.claude-bodyguard 2>/dev/null; launchctl bootstrap system /Library/LaunchDaemons/local.claude-bodyguard.plist;
-        launchctl bootout system/local.tz-watchdog 2>/dev/null; launchctl bootstrap system /Library/LaunchDaemons/local.tz-watchdog.plist;
+        launchctl bootout system/local.tz-watchdog 2>/dev/null; rm -f /Library/LaunchDaemons/local.tz-watchdog.plist '/Library/Application Support/claude-switcher/tz-watchdog.sh';
         launchctl bootout system/local.claude-update 2>/dev/null; rm -f /Library/LaunchDaemons/local.claude-update.plist;"
-    curt=$(readlink /etc/localtime 2>/dev/null)
-    [ "$curt" != "/var/db/timezone/zoneinfo/$TZV" ] && SYSCMDS="$SYSCMDS /usr/sbin/systemsetup -settimezone '$TZV';"
     v6=$(networksetup -getinfo Wi-Fi 2>/dev/null | grep -i '^IPv6:')
     echo "$v6" | grep -qi 'off' || SYSCMDS="$SYSCMDS networksetup -setv6off Wi-Fi;"
     SYSCMDS="$SYSCMDS dscacheutil -flushcache; killall -HUP mDNSResponder"
     echo ""
-    echo "接下来需要输入一次开机密码,用于: 安装守护进程(系统目录) + 锁定时区($TZV) + 关闭IPv6"
+    echo "接下来需要输入一次开机密码,用于: 安装守护进程(系统目录) + 关闭IPv6"
     sudo bash -c "$SYSCMDS" && echo "✓ 系统级配置完成" || echo "✗ 系统级配置被取消,可稍后重新运行安装程序"
     rm -rf "$STAGE"
 

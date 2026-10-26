@@ -12,7 +12,7 @@
 
 ## 系统要求
 
-> **注意**：Linux 版已支持多代理客户端与地区自适应（安装时按出口国家自动锁定 国家/时区/地区格式 三件套）。自动更新（`update` 命令 + 12 小时自动检查）目前仍仅 macOS 版提供，后续版本同步。
+> **注意**：Linux 版已支持多代理客户端与地区自适应（安装时按出口国家自动锁定 国家/地区格式）。自动更新（`update` 命令 + 12 小时自动检查）目前仍仅 macOS 版提供，后续版本同步。
 
 - 任一现代发行版(Ubuntu/Debian/Fedora/Arch 等,systemd)
 - 以下任一代理客户端(TUN/虚拟网卡可用):
@@ -30,15 +30,15 @@
 bash install.sh
 ```
 
-- 安装器自动识别代理客户端与代理组名,并按出口 IP 锁定 国家/时区/地区格式
-- 时区锁定和 IPv6 关闭需要一次 sudo 密码
+- 安装器自动识别代理客户端与代理组名,并按出口 IP 锁定 国家/地区格式
+- IPv6 关闭需要一次 sudo 密码
 - IPv6 关闭会持久化到 `/etc/sysctl.d/90-claude-switcher.conf`;恢复:删掉该文件后 `sudo sysctl -p`
 
 ## 使用
 
 ```bash
 claude-switch menu          # 交互菜单(推荐)
-claude-switch checkdetail   # 14 项逐项检查
+claude-switch checkdetail   # 13 项逐项检查
 claude-switch fix           # 一键修复
 claude-switch switch A      # 切到账号A(切换浏览器登录态)
 ```
@@ -73,7 +73,7 @@ claude-switch switch A      # 切到账号A(切换浏览器登录态)
 | 保镖保护对象 | `claude` CLI 进程(不关浏览器) |
 | 常驻方式 | systemd 用户服务(免 root) |
 | 界面 | 终端菜单 + CLI |
-| 时区/IPv6 | timedatectl / sysctl(需 sudo) |
+| IPv6 | sysctl(需 sudo) |
 
 ## 卸载
 

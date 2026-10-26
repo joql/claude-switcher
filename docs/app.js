@@ -3,7 +3,7 @@
 
   const CHECK_DEFS = [
     { id: "ip", title: "出口 IP / 归属", sub: "ipinfo.io 优先，Cloudflare trace 兜底" },
-    { id: "region", title: "地区一致性", sub: "浏览器时区、语言与出口国家是否矛盾" },
+    { id: "region", title: "地区一致性", sub: "浏览器语言与出口国家是否矛盾" },
     { id: "webrtc", title: "WebRTC 泄漏", sub: "STUN 候选地址与出口 IP 比对" },
     { id: "ipv6", title: "IPv6 暴露", sub: "是否能通过 IPv6 绕过代理直连" },
     { id: "dns", title: "DNS 泄漏（近似）", sub: "公共加密解析通道可达性" },
@@ -29,15 +29,6 @@
     DE: ["de"],
     FR: ["fr"],
     SG: ["en", "zh"],
-  };
-
-  const TZ_ALIASES = {
-    "asia/calcutta": "asia/kolkata",
-    "asia/saigon": "asia/ho_chi_minh",
-    "europe/kiev": "europe/kyiv",
-    "america/buenos_aires": "america/argentina/buenos_aires",
-    utc: "etc/utc",
-    gmt: "etc/gmt",
   };
 
   const PROXY_ORG_RE = /(vpn|proxy|hosting|cloud|server|data\s*center|datacenter|amazon|aws|google|microsoft|azure|oracle|digitalocean|ovh|hetzner|vultr|linode|akamai|cloudflare|leaseweb|m247|contabo|alibaba|tencent|choopa|psychz|colocrossing|mullvad|nord|express|surfshark)/i;
@@ -108,36 +99,11 @@
     return value;
   }
 
-  function getBrowserTimeZone() {
-    try {
-      return Intl.DateTimeFormat().resolvedOptions().timeZone || "未知";
-    } catch (_) {
-      return "未知";
-    }
-  }
-
   function getBrowserLanguages() {
     const list = Array.isArray(navigator.languages) && navigator.languages.length
       ? Array.from(navigator.languages)
       : [navigator.language];
     return list.filter((lang) => typeof lang === "string" && lang.trim()).map((lang) => lang.trim());
-  }
-
-  function formatUtcOffset(minutes) {
-    const sign = minutes >= 0 ? "+" : "-";
-    const absolute = Math.abs(minutes);
-    const hours = String(Math.floor(absolute / 60)).padStart(2, "0");
-    const mins = String(absolute % 60).padStart(2, "0");
-    return `UTC${sign}${hours}:${mins}`;
-  }
-
-  function normalizeTimeZone(zone) {
-    const key = String(zone || "").trim().toLowerCase();
-    return TZ_ALIASES[key] || key;
-  }
-
-  function sameTimeZone(a, b) {
-    return normalizeTimeZone(a) === normalizeTimeZone(b);
   }
 
   function languageMatches(lang, allowed) {
@@ -291,7 +257,6 @@
             city: clipText(data.city || data.region || "", 80),
             region: clipText(data.region || "", 80),
             org: clipText(data.org || "", 160),
-            timezone: clipText(data.timezone || "", 80),
             source: "ipinfo.io",
           },
           fallback: false,
@@ -313,7 +278,6 @@
             city: "",
             region: "",
             org: "",
-            timezone: "",
             source: "Cloudflare trace",
           },
           fallback: true,
@@ -356,7 +320,6 @@
         value: data.city || data.region || "未提供",
       },
       { label: "ASN / 机构", value: data.org || "未提供" },
-      { label: "时区", value: data.timezone || "未提供" },
       { label: "数据源", value: data.source },
     ];
 
@@ -367,7 +330,7 @@
     if (egress.fallback) {
       const ipinfoError = egress.errors.find(([source]) => source === "ipinfo.io");
       notes.push(
-        `ipinfo.io 不可用${ipinfoError ? `（${ipinfoError[1]}）` : ""}，已回退 Cloudflare trace；城市、ASN 与时区信息缺失。`
+        `ipinfo.io 不可用${ipinfoError ? `（${ipinfoError[1]}）` : ""}，已回退 Cloudflare trace；城市与 ASN信息缺失。`
       );
     }
     if (isPrivateAddress(data.ip)) {
@@ -387,14 +350,9 @@
   async function checkRegion(ipTask) {
     const egress = await ipTask;
     const data = egress.data;
-    const timeZone = getBrowserTimeZone();
-    const offset = formatUtcOffset(-new Date().getTimezoneOffset());
     const languages = getBrowserLanguages();
 
     const rows = [
-      { label: "浏览器时区", value: timeZone, mono: true },
-      { label: "UTC 偏移", value: offset, mono: true },
-      { label: "出口时区", value: data?.timezone || "未提供", mono: Boolean(data?.timezone) },
       { label: "浏览器语言", value: languages.length ? languages.join(", ") : "未提供" },
     ];
 
@@ -403,26 +361,12 @@
         status: "warn",
         summary: "缺少出口信息，无法比对",
         rows,
-        notes: ["地区一致性依赖出口国家与时区；请先修复出口 IP 检测。"],
+        notes: ["地区一致性依赖出口国家；请先修复出口 IP 检测。"],
       };
     }
 
     const issues = [];
     const notes = [];
-    let timeZoneState = "无法比对";
-
-    if (data.timezone) {
-      if (sameTimeZone(timeZone, data.timezone)) {
-        timeZoneState = "一致";
-      } else {
-        timeZoneState = "不一致";
-        issues.push(`时区与出口IP不符（浏览器 ${timeZone} ≠ 出口 ${data.timezone}）`);
-        notes.push("时区不一致会形成明显的地理矛盾信号，建议将系统时区调整为出口时区。");
-      }
-    } else {
-      notes.push("出口数据源未返回时区，时区一致性无法判定。");
-    }
-    rows.push({ label: "时区对照", value: timeZoneState });
 
     const country = data.country ? data.country.toUpperCase() : "";
     const allowed = country ? COUNTRY_LANGS[country] : null;
@@ -444,7 +388,7 @@
     }
     rows.push({ label: "语言对照", value: languageState });
 
-    notes.push("本项只读取浏览器暴露的时区与语言，不代表系统级全部区域设置。");
+    notes.push("本项只读取浏览器暴露的语言，不代表系统级全部区域设置。");
 
     if (issues.length) {
       return {
@@ -455,10 +399,10 @@
       };
     }
 
-    if (timeZoneState === "一致" && (!allowed || languageState.startsWith("匹配"))) {
+    if (!allowed || languageState.startsWith("匹配")) {
       return {
         status: "ok",
-        summary: allowed ? "时区与语言均与出口一致" : "时区一致；语言项未映射，仅展示",
+        summary: allowed ? "语言均与出口一致" : "语言项未映射，仅展示",
         rows,
         notes,
       };
@@ -852,7 +796,7 @@
 
     const notes = [
       "浏览器无法读取系统 DNS 配置，也无法知道域名最终由哪个解析器应答；本项不是 DNS 泄漏结论。",
-      "要确认系统 DNS 是否被代理接管（Fake-IP / DNS 隧道），请使用桌面版的 14 项审计。",
+      "要确认系统 DNS 是否被代理接管（Fake-IP / DNS 隧道），请使用桌面版的 13 项审计。",
     ];
 
     if (cloudflareOk && googleOk) {

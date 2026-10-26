@@ -51,7 +51,7 @@ if (-not $PROXY_MODE) {
 Write-Host "[OK] 代理客户端: $PROXY_MODE" -ForegroundColor Green
 Write-Host "[OK] 前置检查通过" -ForegroundColor Green
 
-# ---- 1. 出口国家检查(不能是 CN,否则时区会锁错) ----
+# ---- 1. 出口国家检查(不能是 CN,否则地区会锁错) ----
 $info = try { (& curl.exe -s --max-time 8 "https://ipinfo.io/json" 2>$null | ConvertFrom-Json) } catch { $null }
 $country = if ($info) { $info.country } else { '' }
 $ip = if ($info) { $info.ip } else { '未知' }
@@ -87,45 +87,19 @@ if ($PROXY_MODE -eq 'clash-verge' -and $CLASH_DIR) {
     Write-Host "[OK] 代理组: $grp" -ForegroundColor Green
 }
 
-# ---- 3. IANA 时区 -> Windows 时区ID ----
-$tzMap = @{
-    'America/New_York'    = 'Eastern Standard Time'
-    'America/Chicago'     = 'Central Standard Time'
-    'America/Denver'      = 'Mountain Standard Time'
-    'America/Los_Angeles' = 'Pacific Standard Time'
-    'America/Toronto'     = 'Eastern Standard Time'
-    'America/Vancouver'   = 'Pacific Standard Time'
-    'Asia/Singapore'      = 'Singapore Standard Time'
-    'Asia/Tokyo'          = 'Tokyo Standard Time'
-    'Asia/Seoul'          = 'Korea Standard Time'
-    'Asia/Taipei'         = 'Taipei Standard Time'
-    'Asia/Hong_Kong'      = 'China Standard Time'
-    'Europe/London'       = 'GMT Standard Time'
-    'Europe/Berlin'       = 'W. Europe Standard Time'
-    'Europe/Paris'        = 'Romance Standard Time'
-    'Australia/Sydney'    = 'AUS Eastern Standard Time'
-    'Australia/Melbourne' = 'AUS Eastern Standard Time'
-}
-$tzIana = if ($info -and $info.timezone) { $info.timezone } else { '' }
-$tzId = $tzMap[$tzIana]
-if (-not $tzId) { $tzId = 'Eastern Standard Time' }
-Write-Host "[OK] 锁定时区: $tzId (按出口IP识别)" -ForegroundColor Green
-
-# ---- 4. 安装文件 ----
+# ---- 3. 安装文件 ----
 New-Item -ItemType Directory -Force -Path $BASE | Out-Null
 Copy-Item "$PSScriptRoot\claude-switch.ps1"   "$BASE\claude-switch.ps1" -Force
 Copy-Item "$PSScriptRoot\SwitcherUI.ps1"      "$BASE\SwitcherUI.ps1" -Force
 Copy-Item "$PSScriptRoot\claude-bodyguard.ps1" "$BASE\claude-bodyguard.ps1" -Force
 
-# 写入探测到的客户端模式/代理组名/国家/时区(替换串里的 $ 用 $$ 转义,避免被当作捕获组)
+# 写入探测到的客户端模式/代理组名/国家(替换串里的 $ 用 $$ 转义,避免被当作捕获组)
 $core = Get-Content "$BASE\claude-switch.ps1" -Raw
 $modeEsc = $PROXY_MODE.Replace('$', '$$')
 $countryEsc = $country.Replace('$', '$$')
-$tzEsc = $tzId.Replace('$', '$$')
 $grpEsc = $grp.Replace('$', '$$')
 $core = $core -replace '\$PROXY_MODE = "[^"]*"', ('$$PROXY_MODE = "' + $modeEsc + '"')
 $core = $core -replace '\$COUNTRY_TARGET = "[^"]*"', ('$$COUNTRY_TARGET = "' + $countryEsc + '"')
-$core = $core -replace '\$TZ_TARGET = "[^"]*"', ('$$TZ_TARGET = "' + $tzEsc + '"')
 $core = $core -replace '\$PROXY_GROUP = "[^"]*"', ('$$PROXY_GROUP = "' + $grpEsc + '"')
 # 强制写回 UTF-8 BOM:计划任务用 powershell.exe 5.1 读取,无 BOM 会把中文读成乱码
 $utf8Bom = New-Object System.Text.UTF8Encoding -ArgumentList $true
@@ -175,10 +149,9 @@ prepend-rules:
 }
 
 # ---- 7. 系统级配置 ----
-Set-TimeZone -Id $tzId
 Get-NetAdapterBinding -ComponentID ms_tcpip6 -ErrorAction SilentlyContinue | Where-Object { $_.Enabled } | Disable-NetAdapterBinding -Confirm:$false
 Clear-DnsClientCache
-Write-Host "[OK] 时区已锁定 / IPv6 已关闭 / DNS 缓存已刷新" -ForegroundColor Green
+Write-Host "[OK] IPv6 已关闭 / DNS 缓存已刷新" -ForegroundColor Green
 
 # ---- 8. 注册保镖计划任务 ----
 $action  = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$BASE\claude-bodyguard.ps1`""
