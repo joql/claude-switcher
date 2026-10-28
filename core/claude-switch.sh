@@ -165,6 +165,9 @@ DOMAINS = (
     "intercomassets.com",
 )
 PORTS = (3478, 5349, 19302)
+# Only these exact native process names may bypass the UDP port policy.
+# Browsers, Claude processes, wildcards and path/name regexes are never exempt.
+UDP_DIRECT_PROCESSES = ("ToDesk_Session", "ToDesk_Service", "ToDesk", "ToDesk_Session_Proxy")
 SCRIPT_BEGIN = "// >>> claude-switcher managed rules >>>"
 SCRIPT_END = "// <<< claude-switcher managed rules <<<"
 MERGE_BEGIN = "# >>> claude-switcher pinned rules >>>"
@@ -318,6 +321,23 @@ def expected_rules():
     return rules
 
 
+def udp_direct_exception(rule):
+    if (not isinstance(rule, dict) or str(rule.get("type", "")).upper() != "AND"
+            or rule.get("proxy") != "DIRECT"
+            or (rule.get("extra") or {}).get("disabled") is True):
+        return False
+    # Do not use norm(): removing underscores/case would broaden process identity.
+    payload = re.sub(r"\s*([(),]|&&)\s*", r"\1", str(rule.get("payload", ""))).strip()
+    for process in UDP_DIRECT_PROCESSES:
+        for process_type in ("ProcessName", "PROCESS-NAME"):
+            for network_type in ("Network", "NETWORK"):
+                for udp in ("udp", "UDP"):
+                    atoms = (process_type + "," + process, network_type + "," + udp)
+                    if payload in {"((" + a + ")&&(" + b + "))" for a, b in (atoms, atoms[::-1])}:
+                        return True
+    return False
+
+
 def verify_runtime(clash_dir, group, policy):
     base, secret = controller_config(clash_dir)
     state = {
@@ -331,6 +351,12 @@ def verify_runtime(clash_dir, group, policy):
     rules = state["rules"].get("rules")
     if not isinstance(rules, list):
         fail("Clash /rules 返回格式异常")
+    offset = 0
+    while offset < len(rules) and udp_direct_exception(rules[offset]):
+        offset += 1
+    if offset and str(state["configs"].get("find-process-mode", "strict")).lower() not in {"strict", "always"}:
+        fail("ToDesk UDP 例外需要启用进程识别")
+    rules = rules[offset:]
     expected = expected_rules()
     if len(rules) < len(expected):
         fail("运行中的规则数量不足")
@@ -343,7 +369,7 @@ def verify_runtime(clash_dir, group, policy):
                     or payload != "NETWORK,UDP,DSTPORT," + str(value)
                     or rule.get("proxy") != target
                     or (rule.get("extra") or {}).get("disabled") is True):
-                fail("运行规则未按策略置顶:UDP/" + str(value))
+                fail("运行规则未按策略置顶:UDP/" + str(value) + "（前面仅允许指定 ToDesk 进程的 UDP 直连例外）")
         else:
             rule = rules[index]
             if (not isinstance(rule, dict)
@@ -364,17 +390,27 @@ def rule_strings(group, policy):
 def managed_block(group, policy):
     encoded = json.dumps(rule_strings(group, policy), ensure_ascii=False)
     group_json = json.dumps(group, ensure_ascii=False)
+    direct_rules_json = json.dumps([
+        f"AND,(({a}),({b})),DIRECT"
+        for process in UDP_DIRECT_PROCESSES
+        for a, b in (("PROCESS-NAME," + process, "NETWORK,UDP"),
+                     ("NETWORK,UDP", "PROCESS-NAME," + process))
+    ])
     return f"""{SCRIPT_BEGIN}
 ;(function () {{
   const originalMain = main;
   const pinnedRules = {encoded};
   const group = {group_json};
+  const allowedDirectRules = new Set({direct_rules_json});
+  const isDirectException = (rule) => typeof rule === "string" && allowedDirectRules.has(rule.trim().replace(/\\s*([(),]|&&)\\s*/g, "$1").replace(/NETWORK,udp/g, "NETWORK,UDP"));
   main = function (config, ...args) {{
     const result = originalMain(config, ...args);
     if (!result || typeof result !== \"object\" || Array.isArray(result)) throw new Error(\"claude-switcher: original main must return a config object\");
     if (!Array.isArray(result[\"proxy-groups\"]) || !result[\"proxy-groups\"].some((item) => item && item.name === group)) throw new Error(\"claude-switcher: configured proxy group missing\");
     if (result.rules !== undefined && !Array.isArray(result.rules)) throw new Error(\"claude-switcher: rules must be an array\");
-    result.rules = pinnedRules.concat((result.rules || []).filter((rule) => !pinnedRules.includes(rule)));
+    const rules = result.rules || [];
+    const exceptions = [...new Set(rules.filter(isDirectException))];
+    result.rules = exceptions.concat(pinnedRules, rules.filter((rule) => !isDirectException(rule) && !pinnedRules.includes(rule)));
     return result;
   }};
 }})();

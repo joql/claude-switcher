@@ -123,6 +123,82 @@ class WebRTCRulesTests(unittest.TestCase):
         self.assertTrue(self.requests)
         self.assertTrue(all(auth == "Bearer fixture-secret" for _, auth in self.requests))
 
+    def test_exact_todesk_udp_exceptions_can_precede_protection(self):
+        for policy in ("proxy", "reject"):
+            for process in ("ToDesk_Session", "ToDesk_Service", "ToDesk", "ToDesk_Session_Proxy"):
+                with self.subTest(policy=policy, process=process):
+                    self.responses["/rules"]["rules"] = [
+                        {"type": "AND", "payload": f"((ProcessName,{process}) && (Network,udp))", "proxy": "DIRECT"}
+                    ] + expected_rules(self.group, policy)
+                    self.assertEqual(self.run_helper("verify", policy).returncode, 0)
+
+    def test_broad_or_other_process_exceptions_do_not_pass(self):
+        payloads = [
+            "((ProcessName,ToDesk_Session) || (Network,udp))",
+            "((ProcessName,ToDesk_Session) && (Network,tcp))",
+            "((ProcessName,Claude) && (Network,udp))",
+            "((ProcessName,Google Chrome Helper) && (Network,udp))",
+            "((ProcessName,ToDeskSession) && (Network,udp))",
+            "((ProcessName,ToDesk _Session) && (Network,udp))",
+            "((ProcessName,todesk_session) && (Network,udp))",
+            "((ProcessName,ToDesk_Session.exe) && (Network,udp))",
+            "((ProcessNameRegex,ToDesk.*) && (Network,udp))",
+            "((ProcessName,ToDesk_Session) && (DstPort,3478))",
+            "((Network,udp) && (DstPort,3478))",
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                self.responses["/rules"]["rules"] = [
+                    {"type": "AND", "payload": payload, "proxy": "DIRECT"}
+                ] + expected_rules(self.group)
+                self.assertNotEqual(self.run_helper().returncode, 0)
+
+    def test_todesk_exceptions_do_not_hide_broken_protection(self):
+        exception = {"type": "AND", "payload": "((ProcessName,ToDesk) && (Network,udp))", "proxy": "DIRECT"}
+        variants = [expected_rules(self.group)[1:], expected_rules(self.group)]
+        variants[1][3]["proxy"] = "DIRECT"
+        for rules in variants:
+            self.responses["/rules"]["rules"] = [exception] + rules
+            self.assertNotEqual(self.run_helper().returncode, 0)
+        for mode in ("off", "invalid"):
+            self.responses["/configs"]["find-process-mode"] = mode
+            self.responses["/rules"]["rules"] = [exception] + expected_rules(self.group)
+            self.assertNotEqual(self.run_helper().returncode, 0)
+
+    def test_disabled_or_wrong_target_exception_fails(self):
+        exception = {"type": "AND", "payload": "((ProcessName,ToDesk) && (Network,udp))", "proxy": "DIRECT"}
+        for override in ({"extra": {"disabled": True}}, {"proxy": self.group}):
+            self.responses["/rules"]["rules"] = [dict(exception, **override)] + expected_rules(self.group)
+            self.assertNotEqual(self.run_helper().returncode, 0)
+
+    def test_writer_keeps_only_existing_exact_udp_exceptions_before_pinned_rules(self):
+        allowed = ["AND,((PROCESS-NAME,ToDesk_Session),(NETWORK,udp)),DIRECT",
+                   "AND,((NETWORK,UDP),(PROCESS-NAME,ToDesk_Service)),DIRECT"]
+        unsafe = ["AND,((PROCESS-NAME,Claude),(NETWORK,udp)),DIRECT",
+                  "AND,((PROCESS-NAME,ToDesk _Session),(NETWORK,udp)),DIRECT",
+                  "PROCESS-NAME,ToDesk,DIRECT", "NETWORK,udp,DIRECT"]
+        config = {"rules": unsafe + allowed + allowed, "proxy-groups": [{"name": self.group}]}
+        self.assertEqual(self.run_helper("write").returncode, 0)
+        result = self.evaluate_script(config)["rules"]
+        self.assertEqual(result[:2], allowed)
+        self.assertEqual(result[2:5], [f"AND,((NETWORK,UDP),(DST-PORT,{p})),{self.group}" for p in PORTS])
+        self.assertEqual(result[-len(unsafe):], unsafe)
+        self.assertEqual(self.run_helper("write").returncode, 0)
+        self.assertEqual(self.evaluate_script(config)["rules"], result)
+
+    def test_later_todesk_wrapper_remains_compatible_after_repair(self):
+        self.assertEqual(self.run_helper("write").returncode, 0)
+        script = self.profiles / "Script.js"
+        rule = "AND,((PROCESS-NAME,ToDesk_Session),(NETWORK,udp)),DIRECT"
+        script.write_text(script.read_text() + '\n;(function () { const previous = main; '
+                          'main = function(config) { const result = previous(config); '
+                          'result.rules = [' + json.dumps(rule) + '].concat(result.rules.filter(r => r !== '
+                          + json.dumps(rule) + ')); return result; }; })();\n')
+        self.assertEqual(self.run_helper("write").returncode, 0)
+        result = self.evaluate_script()["rules"]
+        self.assertEqual(result[0], rule)
+        self.assertEqual(result[1], f"AND,((NETWORK,UDP),(DST-PORT,3478)),{self.group}")
+
     def test_default_writer_generates_udp_only_rules_for_real_group(self):
         run = self.run_helper("write")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
