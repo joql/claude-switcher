@@ -289,6 +289,8 @@ WEBRTC_POLICY=proxy ~/.local/bin/claude-switch.sh fix
 
 ToDesk 可保留精确的 UDP 直连例外，避免远控流量被通用 STUN 规则送往海外。仅接受 `PROCESS-NAME` 为 `ToDesk_Session`、`ToDesk_Service`、`ToDesk` 或 `ToDesk_Session_Proxy` 与 `NETWORK,udp` 组成的 `AND` 规则，目标必须为 `DIRECT`，进程识别模式必须为 `strict` 或 `always`。这些例外可以位于防护规则之前，后面的三个端口规则和全部生态域名规则仍须连续、按原顺序生效。“一键修复”保留已有的精确例外，不自动新建；通配符、正则、其他进程、全部 UDP 直连及仅按进程直连的规则不能前置通过检查。进程名匹配不是应用签名验证，不能代替操作系统的进程完整性保护。
 
+国内 DNS 与微信本地通信：生成的全局脚本会让 `geosite:cn`、`.cn`、`shumeitv.com`、`duodiantong.net` 以及 `localhost.weixin.qq.com` 使用阿里 DNS DoH 直连，保留其他 DNS 上游及域名策略。微信本地域名同时排除 Fake-IP 并强制直连，`duodiantong.net` 全域也强制直连；这些网站规则位于原有 STUN/AI 防护规则之后、订阅兜底规则之前。现有 DNS 过滤列表会保留；若使用 Fake-IP 白名单模式，脚本会明确报错，避免把排除规则反向解释。
+
 首次从旧版迁移：请退出 Claude 后，使用最新版仓库的安装器重新安装，再检查结果。旧版 `update` 保留“新版自检失败即回滚”的行为，旧规则未迁移时可能回滚；不要为更新成功而跳过检查。安装器若提示缺少可组合的 `main`，请先备份并在 Clash Verge 的全局扩展脚本中整理现有代码，再重试。其他代理客户端的配置仍由用户自行管理。
 
 这些规则仅覆盖三个常见 UDP 端口，无法覆盖自定义端口、所有 TURN 传输或所有应用的泄漏路径。浏览器插件的作用也限于该浏览器。修复后仍需查看检查结果；不要把一次检测通过视为全系统防泄漏保证。

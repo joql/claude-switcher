@@ -208,7 +208,44 @@ class WebRTCRulesTests(unittest.TestCase):
         self.assertIn("DOMAIN-SUFFIX,claude.ai," + self.group, rules)
         self.assertEqual(rules[-1], "DOMAIN-SUFFIX,example.test,DIRECT")
 
+    def test_local_dns_repair_preserves_proxy_dns_and_is_idempotent(self):
+        self.assertEqual(self.run_helper("write").returncode, 0)
+        config = {"rules": ["MATCH," + self.group],
+                  "proxy-groups": [{"name": self.group}],
+                  "dns": {"enable": True, "nameserver": ["https://1.1.1.1/dns-query"],
+                          "nameserver-policy": {"+.claude.ai": ["https://8.8.8.8/dns-query"]},
+                          "fake-ip-filter": ["*.lan", "custom.test"]}}
+        repaired = self.evaluate_script(config)
+        dns = repaired["dns"]
+        self.assertEqual(dns["nameserver"], config["dns"]["nameserver"])
+        self.assertEqual(dns["nameserver-policy"]["+.claude.ai"],
+                         config["dns"]["nameserver-policy"]["+.claude.ai"])
+        for domain in ("geosite:cn", "+.cn", "+.shumeitv.com", "+.duodiantong.net",
+                       "localhost.weixin.qq.com"):
+            self.assertEqual(dns["nameserver-policy"][domain],
+                             ["https://223.5.5.5/dns-query#DIRECT"])
+        self.assertIn("custom.test", dns["fake-ip-filter"])
+        self.assertIn("localhost.weixin.qq.com", dns["fake-ip-filter"])
+        self.assertIn("DOMAIN,localhost.weixin.qq.com,DIRECT", repaired["rules"])
+        self.assertIn("DOMAIN-SUFFIX,duodiantong.net,DIRECT", repaired["rules"])
+        self.assertEqual(repaired["rules"][-1], "MATCH," + self.group)
+        self.assertEqual(self.evaluate_script(repaired), repaired)
+
+    def test_local_dns_repair_refuses_whitelist_filter_mode(self):
+        self.assertEqual(self.run_helper("write").returncode, 0)
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node is required to exercise generated global scripts")
+        script = (self.profiles / "Script.js").read_text()
+        config = {"rules": [], "proxy-groups": [{"name": self.group}],
+                  "dns": {"fake-ip-filter-mode": "whitelist"}}
+        run = subprocess.run([node, "-e", script + "\nmain(" + json.dumps(config) + ");"],
+                             capture_output=True, text=True, timeout=5)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("blacklist", run.stderr)
+
     def test_reject_policy_persists_across_future_invocations(self):
+        # The DNS overrides do not alter the UDP rejection policy.
         run = self.run_helper("write", "reject")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertEqual((self.base / "webrtc-policy").read_text().strip(), "reject")
@@ -224,7 +261,7 @@ class WebRTCRulesTests(unittest.TestCase):
         self.assertEqual(self.run_helper("write", "reject").returncode, 0)
         self.assertEqual(self.run_helper("write", "proxy").returncode, 0)
         rules = self.evaluate_script()["rules"]
-        self.assertEqual(len(rules), len(DOMAINS) + 4)
+        self.assertEqual(len(rules), len(DOMAINS) + 6)
         self.assertTrue(all(r.endswith("," + self.group) for r in rules[:3]))
 
     def test_existing_script_runs_first_and_repeated_write_is_idempotent(self):

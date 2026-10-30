@@ -400,6 +400,7 @@ def managed_block(group, policy):
 ;(function () {{
   const originalMain = main;
   const pinnedRules = {encoded};
+  const localDirectRules = ["DOMAIN,localhost.weixin.qq.com,DIRECT", "DOMAIN-SUFFIX,duodiantong.net,DIRECT"];
   const group = {group_json};
   const allowedDirectRules = new Set({direct_rules_json});
   const isDirectException = (rule) => typeof rule === "string" && allowedDirectRules.has(rule.trim().replace(/\\s*([(),]|&&)\\s*/g, "$1").replace(/NETWORK,udp/g, "NETWORK,UDP"));
@@ -410,7 +411,19 @@ def managed_block(group, policy):
     if (result.rules !== undefined && !Array.isArray(result.rules)) throw new Error(\"claude-switcher: rules must be an array\");
     const rules = result.rules || [];
     const exceptions = [...new Set(rules.filter(isDirectException))];
-    result.rules = exceptions.concat(pinnedRules, rules.filter((rule) => !isDirectException(rule) && !pinnedRules.includes(rule)));
+    result.rules = exceptions.concat(pinnedRules, localDirectRules, rules.filter((rule) => !isDirectException(rule) && !pinnedRules.includes(rule) && !localDirectRules.includes(rule)));
+    const dns = result.dns === undefined ? {{}} : result.dns;
+    if (!dns || typeof dns !== "object" || Array.isArray(dns)) throw new Error("claude-switcher: dns must be an object");
+    if (dns["fake-ip-filter-mode"] && dns["fake-ip-filter-mode"] !== "blacklist") throw new Error("claude-switcher: local DNS exceptions require blacklist fake-ip-filter-mode");
+    const filters = dns["fake-ip-filter"] === undefined ? ["*.lan", "*.local", "localhost"] : dns["fake-ip-filter"];
+    if (!Array.isArray(filters)) throw new Error("claude-switcher: fake-ip-filter must be an array");
+    const policy = dns["nameserver-policy"] === undefined ? {{}} : dns["nameserver-policy"];
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)) throw new Error("claude-switcher: nameserver-policy must be an object");
+    const domesticPolicy = {{...policy}};
+    for (const domain of ["geosite:cn", "+.cn", "+.shumeitv.com", "+.duodiantong.net", "localhost.weixin.qq.com"]) {{
+      domesticPolicy[domain] = ["https://223.5.5.5/dns-query#DIRECT"];
+    }}
+    result.dns = {{...dns, "nameserver-policy": domesticPolicy, "fake-ip-filter": [...new Set([...filters, "localhost.weixin.qq.com"]) ]}};
     return result;
   }};
 }})();
