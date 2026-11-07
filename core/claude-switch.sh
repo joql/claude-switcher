@@ -338,6 +338,47 @@ def udp_direct_exception(rule):
     return False
 
 
+# STUN hostnames must stay in sync with core/stun-probe.py. Domain rules ahead
+# of the UDP guards are safe only when they cannot match these or Claude traffic.
+STUN_DOMAINS = ("stun.miwifi.com", "stun.chat.bilibili.com",
+                "stun.l.google.com", "stun.cloudflare.com")
+
+
+def rule_scope(rule):
+    kind = str(rule.get("type", "")).upper().replace("-", "").replace("_", "")
+    payload = str(rule.get("payload", "")).strip().lower()
+    if kind in {"DOMAIN", "DOMAINSUFFIX"} and re.fullmatch(
+            r"[a-z0-9_](?:[a-z0-9_.-]*[a-z0-9_])?", payload) and ".." not in payload:
+        return ("domain" if kind == "DOMAIN" else "suffix"), payload
+    if kind == "AND":
+        match = re.fullmatch(r"NETWORK,UDP,DSTPORT,([0-9]+)", norm(payload))
+        if match:
+            return "port", int(match.group(1))
+    return "unknown", payload
+
+
+def domain_overlap(scope, domain, protected, suffix=True):
+    # An exact parent domain does not match its children. Two suffix ranges
+    # overlap when either is a parent of the other, including label boundaries.
+    if scope == "domain":
+        return domain == protected or (suffix and domain.endswith("." + protected))
+    return (domain == protected or protected.endswith("." + domain)
+            or (suffix and domain.endswith("." + protected)))
+
+
+def rule_may_overlap(scope, payload, kind, value):
+    if scope == "port":
+        return kind == "domain" or payload == value
+    if scope in {"domain", "suffix"}:
+        if kind == "domain":
+            return domain_overlap(scope, payload, value)
+        return (any(domain_overlap(scope, payload, domain) for domain in DOMAINS)
+                or any(domain_overlap(scope, payload, host, suffix=False) for host in STUN_DOMAINS))
+    # MATCH, IP, process, rule-set and logical expressions remain conservative.
+    # Routing to the expected group is safe regardless of their matching scope.
+    return True
+
+
 def verify_runtime(clash_dir, group, policy):
     base, secret = controller_config(clash_dir)
     state = {
@@ -351,33 +392,42 @@ def verify_runtime(clash_dir, group, policy):
     rules = state["rules"].get("rules")
     if not isinstance(rules, list):
         fail("Clash /rules 返回格式异常")
-    offset = 0
-    while offset < len(rules) and udp_direct_exception(rules[offset]):
-        offset += 1
-    if offset and str(state["configs"].get("find-process-mode", "strict")).lower() not in {"strict", "always"}:
-        fail("ToDesk UDP 例外需要启用进程识别")
-    rules = rules[offset:]
-    expected = expected_rules()
-    if len(rules) < len(expected):
-        fail("运行中的规则数量不足")
-    for index, (kind, value) in enumerate(expected):
-        if kind == "port":
-            rule = rules[index]
-            target = "REJECT" if policy == "reject" else group
-            payload = norm(rule.get("payload", "")) if isinstance(rule, dict) else ""
-            if (not isinstance(rule, dict) or str(rule.get("type", "")).upper() != "AND"
-                    or payload != "NETWORK,UDP,DSTPORT," + str(value)
-                    or rule.get("proxy") != target
-                    or (rule.get("extra") or {}).get("disabled") is True):
-                fail("运行规则未按策略置顶:UDP/" + str(value) + "（前面仅允许指定 ToDesk 进程的 UDP 直连例外）")
-        else:
-            rule = rules[index]
-            if (not isinstance(rule, dict)
-                    or str(rule.get("type", "")).upper().replace("_", "-") not in {"DOMAIN-SUFFIX", "DOMAINSUFFIX"}
-                    or str(rule.get("payload", "")).strip().lower() != value
-                    or rule.get("proxy") != group
-                    or (rule.get("extra") or {}).get("disabled") is True):
-                fail("运行规则未按策略置顶:" + value)
+    pending = expected_rules()
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            fail("运行规则格式异常:第 %d 条" % (index + 1))
+        if (rule.get("extra") or {}).get("disabled") is True:
+            continue
+        if udp_direct_exception(rule):
+            if str(state["configs"].get("find-process-mode", "strict")).lower() not in {"strict", "always"}:
+                fail("ToDesk UDP 例外需要启用进程识别")
+            continue
+        scope, payload = rule_scope(rule)
+        destination = rule.get("proxy")
+        remaining = []
+        for kind, value in pending:
+            target = "REJECT" if kind == "port" and policy == "reject" else group
+            # Required protection must still exist even if an earlier rule uses the same group.
+            if (scope == ("port" if kind == "port" else "suffix")
+                    and payload == value and destination == target):
+                continue
+            if rule_may_overlap(scope, payload, kind, value):
+                # Managed UDP rejection is intentional even for Claude domain traffic.
+                managed_reject = (kind == "domain" and scope == "port"
+                                  and payload in PORTS and policy == "reject"
+                                  and destination == "REJECT")
+                if destination != target and not managed_reject:
+                    label = "UDP/" + str(value) if kind == "port" else value
+                    fail("运行规则冲突:第 %d 条 %s,%s → %s 可能抢先匹配 %s（预期 %s）" % (
+                        index + 1, rule.get("type", "未知"), rule.get("payload", ""),
+                        destination, label, target))
+            remaining.append((kind, value))
+        pending = remaining
+        if not pending:
+            break
+    if pending:
+        missing = ["UDP/" + str(value) if kind == "port" else value for kind, value in pending]
+        fail("运行规则缺少有效保护:" + ", ".join(missing))
     return state
 
 

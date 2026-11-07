@@ -287,7 +287,7 @@ WEBRTC_POLICY=proxy ~/.local/bin/claude-switch.sh fix
 
 检查读取本机 Mihomo 的 `/configs`、`/proxies`、`/rules`，核对 rule 模式、代理组及实际规则的顺序、目标和启用状态；不再把文件中的文字或 fake-IP 解析当成规则生效。**全局模式（Global）视为合规**：该模式不经过规则匹配、全部流量已走代理，检查会标注「全局模式(全部流量走代理)」，无需写入 Script.js；规则置顶与 WebRTC 端口策略仅在 rule 模式下生效。控制接口连接优先使用配置中的 Unix socket，失效时回退到服务实际使用的 `/var/run/clash-verge-service/users/<uid>/verge-mihomo.sock`。**STUN 无响应不等于没有泄漏**：默认策略会报告未验证；仅在已验证拒绝规则的 `reject` 策略下，才把探测无响应解释为该端口策略的预期结果。
 
-ToDesk 可保留精确的 UDP 直连例外，避免远控流量被通用 STUN 规则送往海外。仅接受 `PROCESS-NAME` 为 `ToDesk_Session`、`ToDesk_Service`、`ToDesk` 或 `ToDesk_Session_Proxy` 与 `NETWORK,udp` 组成的 `AND` 规则，目标必须为 `DIRECT`，进程识别模式必须为 `strict` 或 `always`。这些例外可以位于防护规则之前，后面的三个端口规则和全部生态域名规则仍须连续、按原顺序生效。“一键修复”保留已有的精确例外，不自动新建；通配符、正则、其他进程、全部 UDP 直连及仅按进程直连的规则不能前置通过检查。进程名匹配不是应用签名验证，不能代替操作系统的进程完整性保护。
+ToDesk 可保留精确的 UDP 直连例外，避免远控流量被通用 STUN 规则送往海外。仅接受 `PROCESS-NAME` 为 `ToDesk_Session`、`ToDesk_Service`、`ToDesk` 或 `ToDesk_Session_Proxy` 与 `NETWORK,udp` 组成的 `AND` 规则，目标必须为 `DIRECT`，进程识别模式必须为 `strict` 或 `always`。这些例外可以位于防护规则之前。检查允许无关的前置域名规则，以及指向预期代理组的规则，并按域名边界判断父子域名是否冲突。STUN 探测域名也受保护。三个端口规则和全部生态域名保护规则仍须存在并启用，但无需连续排列。可能抢先匹配保护流量并导向其他出口的规则会报告具体位置和目标；无法确认范围的规则同样保守处理。“一键修复”保留已有的精确例外，不自动新建；通配符、正则、其他进程、全部 UDP 直连及仅按进程直连的规则不能作为直连例外前置通过检查。进程名匹配不是应用签名验证，不能代替操作系统的进程完整性保护。
 
 国内 DNS 与微信本地通信：生成的全局脚本会让 `geosite:cn`、`.cn`、`shumeitv.com`、`duodiantong.net` 以及 `localhost.weixin.qq.com` 使用阿里 DNS DoH 直连，保留其他 DNS 上游及域名策略。微信本地域名同时排除 Fake-IP 并强制直连，`duodiantong.net` 全域也强制直连；这些网站规则位于原有 STUN/AI 防护规则之后、订阅兜底规则之前。现有 DNS 过滤列表会保留；若使用 Fake-IP 白名单模式，脚本会明确报错，避免把排除规则反向解释。
 

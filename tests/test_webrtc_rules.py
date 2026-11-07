@@ -165,11 +165,112 @@ class WebRTCRulesTests(unittest.TestCase):
             self.responses["/rules"]["rules"] = [exception] + expected_rules(self.group)
             self.assertNotEqual(self.run_helper().returncode, 0)
 
-    def test_disabled_or_wrong_target_exception_fails(self):
+    def test_disabled_and_expected_target_rules_do_not_block_protection(self):
         exception = {"type": "AND", "payload": "((ProcessName,ToDesk) && (Network,udp))", "proxy": "DIRECT"}
         for override in ({"extra": {"disabled": True}}, {"proxy": self.group}):
             self.responses["/rules"]["rules"] = [dict(exception, **override)] + expected_rules(self.group)
-            self.assertNotEqual(self.run_helper().returncode, 0)
+            self.assertEqual(self.run_helper().returncode, 0)
+
+    def test_unrelated_domain_prefixes_and_interleaved_rules_pass(self):
+        rules = expected_rules(self.group)
+        # Future domains require no allowlist. Suffix matching uses label boundaries.
+        unrelated = ["muse.ai", "grok.com", "future-ai.example", "notclaude.ai", "anthropic.com.evil"]
+        prefix = [{"type": "DomainSuffix", "payload": d, "proxy": "DIRECT"} for d in unrelated]
+        prefix += [{"type": "DomainSuffix", "payload": "muse.ai", "proxy": "REJECT"}]
+        for index, rule in enumerate(prefix):
+            rules.insert(index * 2, rule)
+        self.responses["/rules"]["rules"] = prefix + rules
+        self.assertEqual(self.run_helper().returncode, 0)
+
+    def test_parent_child_and_exact_domain_conflicts_are_reported(self):
+        for kind, domain in [("DomainSuffix", "ai"), ("DomainSuffix", "api.anthropic.com"),
+                             ("DomainSuffix", "anthropic.com"), ("Domain", "claude.ai"),
+                             ("Domain", "api.anthropic.com")]:
+            with self.subTest(kind=kind, domain=domain):
+                # Put domain conflicts after UDP protection to exercise domain overlap itself.
+                rules = expected_rules(self.group)
+                rules.insert(3, {"type": kind, "payload": domain, "proxy": "DIRECT"})
+                self.responses["/rules"]["rules"] = rules
+                result = self.run_helper()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("第 4 条", result.stderr)
+                self.assertIn(domain, result.stderr)
+                self.assertIn("运行规则冲突", result.stderr)
+
+    def test_stun_host_and_parent_suffix_cannot_bypass_udp_guards(self):
+        for kind, domain in [("Domain", "stun.l.google.com"), ("DomainSuffix", "google.com"),
+                             ("DomainSuffix", "stun.chat.bilibili.com")]:
+            with self.subTest(domain=domain):
+                self.responses["/rules"]["rules"] = [
+                    {"type": kind, "payload": domain, "proxy": "DIRECT"}
+                ] + expected_rules(self.group)
+                result = self.run_helper()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("UDP/3478", result.stderr)
+
+    def test_matching_rules_to_expected_group_pass(self):
+        for rule in [{"type": "DomainSuffix", "payload": "ai"},
+                     {"type": "Domain", "payload": "stun.l.google.com"},
+                     {"type": "Match", "payload": ""},
+                     {"type": "RuleSet", "payload": "custom-provider"}]:
+            with self.subTest(rule=rule):
+                self.responses["/rules"]["rules"] = [dict(rule, proxy=self.group)] + expected_rules(self.group)
+                self.assertEqual(self.run_helper().returncode, 0)
+
+    def test_unknown_or_broad_rules_to_other_targets_block(self):
+        for kind, payload in [("Match", ""), ("IPCIDR", "0.0.0.0/0"),
+                              ("RuleSet", "custom-provider"), ("ProcessName", "Claude"),
+                              ("DomainKeyword", "claude"),
+                              ("AND", "((Network,udp) || (DstPort,3478))")]:
+            with self.subTest(kind=kind):
+                self.responses["/rules"]["rules"] = [
+                    {"type": kind, "payload": payload, "proxy": "DIRECT"}
+                ] + expected_rules(self.group)
+                self.assertNotEqual(self.run_helper().returncode, 0)
+
+    def test_same_target_prefix_does_not_replace_required_protection(self):
+        rules = expected_rules(self.group)
+        rules.pop(0)
+        self.responses["/rules"]["rules"] = [
+            {"type": "Match", "payload": "", "proxy": self.group}
+        ] + rules
+        result = self.run_helper()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("缺少有效保护:UDP/3478", result.stderr)
+
+    def test_disabled_required_protection_cannot_pass(self):
+        for index in (0, 3):
+            with self.subTest(index=index):
+                rules = expected_rules(self.group)
+                rules[index]["extra"] = {"disabled": True}
+                self.responses["/rules"]["rules"] = rules
+                self.assertNotEqual(self.run_helper().returncode, 0)
+
+    def test_later_conflicts_do_not_override_first_matching_protection(self):
+        self.responses["/rules"]["rules"] = expected_rules(self.group) + [
+            {"type": "Match", "payload": "", "proxy": "DIRECT"}
+        ]
+        self.assertEqual(self.run_helper().returncode, 0)
+
+    def test_reject_policy_handles_unrelated_domains_and_blocks_stun_override(self):
+        prefix = {"type": "DomainSuffix", "payload": "future-ai.example", "proxy": "DIRECT"}
+        self.responses["/rules"]["rules"] = [prefix] + expected_rules(self.group, "reject")
+        self.assertEqual(self.run_helper("verify", "reject").returncode, 0)
+        prefix.update(type="Domain", payload="stun.l.google.com", proxy=self.group)
+        self.assertNotEqual(self.run_helper("verify", "reject").returncode, 0)
+
+    def test_stun_protected_hosts_follow_shipped_probe(self):
+        import ast
+        source = SOURCE.read_text()
+        helper = re.search(r"<<'PY_CLASH_RULES'\n(.*?)\nPY_CLASH_RULES", source, re.S).group(1)
+        def constant(text, name):
+            tree = ast.parse(text)
+            return next(ast.literal_eval(node.value) for node in tree.body
+                        if isinstance(node, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == name for t in node.targets))
+        probe = (ROOT / "core/stun-probe.py").read_text()
+        self.assertEqual(set(constant(helper, "STUN_DOMAINS")),
+                         {host for host, port in constant(probe, "SERVERS")})
 
     def test_writer_keeps_only_existing_exact_udp_exceptions_before_pinned_rules(self):
         allowed = ["AND,((PROCESS-NAME,ToDesk_Session),(NETWORK,udp)),DIRECT",
