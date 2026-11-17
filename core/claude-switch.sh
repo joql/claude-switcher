@@ -1,6 +1,6 @@
 #!/bin/bash
 # Claude 账号切换器 - 核心脚本 (通用版)
-# 用法: claude-switch.sh check | status | switch A|B | checkdetail | fix | set-region | update [--check|--auto] | diagnose-proxy
+# 用法: claude-switch.sh check | status | switch A|B|C | checkdetail | fix | set-region | update [--check|--auto] | diagnose-proxy
 set -u
 export LC_ALL=en_US.UTF-8
 
@@ -1375,7 +1375,7 @@ open_safe() {
 
 snapshot_export() {
     target="${1:-}"; out="${2:-}"; mode="${3:-}"
-    case "$target" in A|B) ;; *) echo "FAIL:账号必须是 A 或 B"; return 1 ;; esac
+    case "$target" in A|B|C) ;; *) echo "FAIL:账号必须是 A、B 或 C"; return 1 ;; esac
     [ -d "$BASE/accounts/$target" ] || { echo "FAIL:账号$target 没有已归档快照(先切换一次让它归档)"; return 1; }
     [ -n "$out" ] || { echo "FAIL:请指定导出文件路径"; return 1; }
     case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
@@ -1423,7 +1423,7 @@ EOF
 
 snapshot_import() {
     file="${1:-}"; target="${2:-}"; mode="${3:-}"
-    case "$target" in A|B) ;; *) echo "FAIL:账号必须是 A 或 B"; return 1 ;; esac
+    case "$target" in A|B|C) ;; *) echo "FAIL:账号必须是 A、B 或 C"; return 1 ;; esac
     [ -f "$file" ] || { echo "FAIL:找不到镜像文件: $file"; return 1; }
     [ -e "$BASE/accounts/$target" ] && { echo "FAIL:账号$target 已有快照,请先导出或删除后再导入"; return 1; }
 
@@ -1458,7 +1458,7 @@ import json, sys
 with open(sys.argv[1], encoding="utf-8") as f: meta = json.load(f)
 assert meta.get("format") == "claude-switcher-snapshot"
 assert meta.get("version") == 1
-assert meta.get("account") in ("A", "B")
+assert meta.get("account") in ("A", "B", "C")
 sys.exit(0 if meta.get("account") == sys.argv[2] else 1)
 PY
     then
@@ -1485,7 +1485,8 @@ status() {
     cur="none"; [ -f "$BASE/current" ] && cur=$(cat "$BASE/current")
     hasA=0; [ -d "$BASE/accounts/A" ] && hasA=1
     hasB=0; [ -d "$BASE/accounts/B" ] && hasB=1
-    echo "current=$cur hasA=$hasA hasB=$hasB"
+    hasC=0; [ -d "$BASE/accounts/C" ] && hasC=1
+    echo "current=$cur hasA=$hasA hasB=$hasB hasC=$hasC"
 }
 
 quit_claude() {
@@ -1564,6 +1565,7 @@ copy_tree() {
 
 switch_to() {
     target="$1"
+    case "$target" in A|B|C) ;; *) echo "FAIL:账号必须是 A、B 或 C"; return 1 ;; esac
     cur="none"; [ -f "$BASE/current" ] && cur=$(cat "$BASE/current")
     just_archived=0
 
@@ -1634,5 +1636,5 @@ case "${1:-}" in
     snapshot-import) snapshot_import "${2:-}" "${3:-}" "${4:-}" ;;
     write-merge-rules) write_merge_rules ;;  # 隐藏入口:供安装器调用,保证两处合并逻辑一致
     fingerprint) fingerprint ;;
-    *) echo "用法: claude-switch.sh check|checkdetail|fix|status|switch A|B|set-region|update [--check|--auto]|update-check|fingerprint|snapshot-export <A|B> <file>|snapshot-import <file> <A|B>|open-safe <url>|cli-info|diagnose-proxy [--proxy URL|--config FILE]"; exit 2 ;;
+    *) echo "用法: claude-switch.sh check|checkdetail|fix|status|switch A|B|C|set-region|update [--check|--auto]|update-check|fingerprint|snapshot-export <A|B|C> <file>|snapshot-import <file> <A|B|C>|open-safe <url>|cli-info|diagnose-proxy [--proxy URL|--config FILE]"; exit 2 ;;
 esac

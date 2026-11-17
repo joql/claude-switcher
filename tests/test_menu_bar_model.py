@@ -8,6 +8,7 @@ import unittest
 
 PROJECT = Path(__file__).resolve().parents[1]
 SCENARIOS = (
+    "account_c_status", "account_c_switch", "legacy_core_accounts", "invalid_account_c_status",
     "startup_once", "warnings_allowed", "local_status_refresh", "fresh_audit", "failed_check",
     "incomplete_check", "duplicate_check", "duplicate_overwrite", "empty_check",
     "unknown_check_code", "empty_check_code", "nonzero_check", "timeout_check",

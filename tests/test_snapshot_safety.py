@@ -160,6 +160,40 @@ mv() {
         self.assertFalse((self.base / "accounts" / "A.new").exists())
         self.assertFalse((self.base / "accounts" / "A.previous").exists())
 
+    def test_switch_to_saved_c_preserves_a_and_b(self):
+        (self.base / "accounts" / "C").mkdir()
+        (self.base / "accounts" / "C" / "marker").write_text("saved-C")
+        (self.base / "current").write_text("A")
+        run = self.run_shell(self.archive + "\n" + self.switch + "\nswitch_to C")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual((self.base / "current").read_text().strip(), "C")
+        self.assertEqual((self.data / "marker").read_text(), "saved-C")
+        self.assertEqual((self.base / "accounts/A/marker").read_text(), "live-A")
+        self.assertEqual((self.base / "accounts/B/marker").read_text(), "saved-B")
+
+    def test_first_c_switch_initializes_empty_data(self):
+        (self.base / "current").write_text("A")
+        run = self.run_shell(self.archive + "\n" + self.switch + "\nswitch_to C")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(list(self.data.iterdir()), [])
+        self.assertEqual((self.base / "current").read_text().strip(), "C")
+        self.assertEqual((self.base / "accounts/A/marker").read_text(), "live-A")
+
+    def test_invalid_switch_target_is_rejected_before_changes(self):
+        (self.base / "current").write_text("A")
+        run = self.run_shell(self.archive + "\n" + self.switch + "\nswitch_to ../outside")
+        self.assertNotEqual(run.returncode, 0)
+        self.assert_data()
+        self.assertFalse((self.fixture / "launched").exists())
+
+    def test_status_reports_c_without_creating_snapshot(self):
+        (self.base / "current").write_text("C")
+        run = self.run_shell(function_source("status") + "\nstatus")
+        self.assertEqual(run.stdout.strip(), "current=C hasA=1 hasB=1 hasC=0")
+        (self.base / "accounts/C").mkdir()
+        run = self.run_shell(function_source("status") + "\nstatus")
+        self.assertEqual(run.stdout.strip(), "current=C hasA=1 hasB=1 hasC=1")
+
     def test_switch_does_not_advance_if_archive_fails(self):
         (self.base / "current").write_text("A")
         code = (

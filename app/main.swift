@@ -60,6 +60,8 @@ final class VM: ObservableObject {
     @Published var current = "?"
     @Published var hasA = false
     @Published var hasB = false
+    @Published var hasC = false
+    @Published var supportsC = false
     @Published var banner = ""
     @Published var note = ""
     @Published var fingerprint = ""
@@ -212,13 +214,16 @@ final class VM: ObservableObject {
             let pair = field.split(separator: "=", maxSplits: 1).map(String.init)
             if pair.count == 2 { values[pair[0]] = pair[1] }
         }
-        guard result.succeeded, let account = fields["current"], ["A", "B", "none"].contains(account),
-              let a = fields["hasA"], let b = fields["hasB"], ["0", "1"].contains(a), ["0", "1"].contains(b) else {
-            current = "未知"; hasA = false; hasB = false
+        // Older installed cores omit hasC. Preserve A/B compatibility during upgrades.
+        let c = fields["hasC"] ?? "0"
+        guard result.succeeded, let account = fields["current"], ["A", "B", "C", "none"].contains(account),
+              let a = fields["hasA"], let b = fields["hasB"], ["0", "1"].contains(a), ["0", "1"].contains(b), ["0", "1"].contains(c),
+              account != "C" || fields["hasC"] != nil else {
+            current = "未知"; hasA = false; hasB = false; hasC = false; supportsC = false
             return false
         }
         current = account == "none" ? "未初始化" : account
-        hasA = a == "1"; hasB = b == "1"
+        hasA = a == "1"; hasB = b == "1"; hasC = c == "1"; supportsC = fields["hasC"] != nil
         return true
     }
 
@@ -283,7 +288,7 @@ final class VM: ObservableObject {
     }
 
     func switchTo(_ target: String) {
-        guard !isBusy, ["A", "B"].contains(target) else { return }
+        guard !isBusy, ["A", "B", "C"].contains(target), target != "C" || supportsC else { return }
         hideAfterSwitch?.cancel()
         isBusy = true
         switchRequested = true
@@ -311,7 +316,9 @@ final class VM: ObservableObject {
                 return
             }
             var extra = ""
-            if target == "B" && !self.hasB { extra = "B 号首次使用：请在打开的 Claude 里登录 B 账号，登录一次即可。" }
+            if (target == "B" && !self.hasB) || (target == "C" && !self.hasC) {
+                extra = "\(target) 号首次使用：请在打开的 Claude 里登录 \(target) 账号，登录一次即可。"
+            }
             let unchanged = lines.contains { $0.hasPrefix("INFO:") }
             if unchanged { extra = "" }
             self.current = target
@@ -477,6 +484,7 @@ struct ContentView: View {
                 HStack(spacing: 10) {
                     accountButton("A", subtitle: vm.current == "A" ? "当前" : (vm.hasA ? "已建档" : "未初始化"))
                     accountButton("B", subtitle: vm.current == "B" ? "当前" : (vm.hasB ? "已建档" : "未初始化"))
+                    accountButton("C", subtitle: !vm.supportsC ? "请更新核心脚本" : (vm.current == "C" ? "当前" : (vm.hasC ? "已建档" : "未初始化")))
                 }
             }
         }
@@ -502,7 +510,7 @@ struct ContentView: View {
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(vm.current == t ? Color.indigo : Color.white.opacity(0.1), lineWidth: 1.2))
         }
         .buttonStyle(.plain)
-        .disabled(vm.isBusy)
+        .disabled(vm.isBusy || (t == "C" && !vm.supportsC))
     }
 
     var retryCard: some View {
