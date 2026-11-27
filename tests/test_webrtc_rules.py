@@ -25,6 +25,14 @@ DOMAINS = ("claude.ai claude.com anthropic.com claudeusercontent.com "
            "stripe.network stripecdn.com intercom.io intercomcdn.com "
            "intercomassets.com").split()
 PORTS = (3478, 5349, 19302)
+LAN_RULES = [
+    "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+    "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+    "IP-CIDR,169.254.0.0/16,DIRECT,no-resolve",
+    "IP-CIDR6,fc00::/7,DIRECT,no-resolve",
+    "IP-CIDR6,fe80::/10,DIRECT,no-resolve",
+]
 
 
 def expected_rules(group, policy="proxy"):
@@ -132,6 +140,20 @@ class WebRTCRulesTests(unittest.TestCase):
                     ] + expected_rules(self.group, policy)
                     self.assertEqual(self.run_helper("verify", policy).returncode, 0)
 
+    def test_only_exact_enabled_lan_direct_rules_can_precede_protection(self):
+        lan = [{"type": "IPCIDR", "payload": rule.split(",")[1], "proxy": "DIRECT"}
+               for rule in LAN_RULES]
+        pinned = expected_rules(self.group)
+        self.responses["/configs"]["find-process-mode"] = "off"
+        self.responses["/rules"]["rules"] = lan + pinned
+        self.assertEqual(self.run_helper().returncode, 0)
+        for override in ({"payload": "0.0.0.0/0"}, {"payload": "fc00::/6"},
+                         {"type": "SrcIPCIDR"}, {"proxy": self.group},
+                         {"extra": {"disabled": True}}):
+            with self.subTest(override=override):
+                self.responses["/rules"]["rules"] = [dict(lan[0], **override)] + pinned
+                self.assertNotEqual(self.run_helper().returncode, 0)
+
     def test_broad_or_other_process_exceptions_do_not_pass(self):
         payloads = [
             "((ProcessName,ToDesk_Session) || (Network,udp))",
@@ -171,17 +193,17 @@ class WebRTCRulesTests(unittest.TestCase):
             self.responses["/rules"]["rules"] = [dict(exception, **override)] + expected_rules(self.group)
             self.assertNotEqual(self.run_helper().returncode, 0)
 
-    def test_writer_keeps_only_existing_exact_udp_exceptions_before_pinned_rules(self):
+    def test_writer_keeps_lan_and_only_exact_udp_exceptions_before_pinned_rules(self):
         allowed = ["AND,((PROCESS-NAME,ToDesk_Session),(NETWORK,udp)),DIRECT",
                    "AND,((NETWORK,UDP),(PROCESS-NAME,ToDesk_Service)),DIRECT"]
         unsafe = ["AND,((PROCESS-NAME,Claude),(NETWORK,udp)),DIRECT",
                   "AND,((PROCESS-NAME,ToDesk _Session),(NETWORK,udp)),DIRECT",
                   "PROCESS-NAME,ToDesk,DIRECT", "NETWORK,udp,DIRECT"]
-        config = {"rules": unsafe + allowed + allowed, "proxy-groups": [{"name": self.group}]}
+        config = {"rules": unsafe + allowed + LAN_RULES + allowed, "proxy-groups": [{"name": self.group}]}
         self.assertEqual(self.run_helper("write").returncode, 0)
         result = self.evaluate_script(config)["rules"]
-        self.assertEqual(result[:2], allowed)
-        self.assertEqual(result[2:5], [f"AND,((NETWORK,UDP),(DST-PORT,{p})),{self.group}" for p in PORTS])
+        self.assertEqual(result[:len(LAN_RULES) + 2], LAN_RULES + allowed)
+        self.assertEqual(result[len(LAN_RULES) + 2:len(LAN_RULES) + 5], [f"AND,((NETWORK,UDP),(DST-PORT,{p})),{self.group}" for p in PORTS])
         self.assertEqual(result[-len(unsafe):], unsafe)
         self.assertEqual(self.run_helper("write").returncode, 0)
         self.assertEqual(self.evaluate_script(config)["rules"], result)
@@ -197,13 +219,15 @@ class WebRTCRulesTests(unittest.TestCase):
         self.assertEqual(self.run_helper("write").returncode, 0)
         result = self.evaluate_script()["rules"]
         self.assertEqual(result[0], rule)
-        self.assertEqual(result[1], f"AND,((NETWORK,UDP),(DST-PORT,3478)),{self.group}")
+        self.assertEqual(result[1:1 + len(LAN_RULES)], LAN_RULES)
+        self.assertEqual(result[1 + len(LAN_RULES)], f"AND,((NETWORK,UDP),(DST-PORT,3478)),{self.group}")
 
     def test_default_writer_generates_udp_only_rules_for_real_group(self):
         run = self.run_helper("write")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         rules = self.evaluate_script()["rules"]
-        self.assertEqual(rules[:3], [f"AND,((NETWORK,UDP),(DST-PORT,{p})),{self.group}"
+        self.assertEqual(rules[:len(LAN_RULES)], LAN_RULES)
+        self.assertEqual(rules[len(LAN_RULES):len(LAN_RULES) + 3], [f"AND,((NETWORK,UDP),(DST-PORT,{p})),{self.group}"
                                      for p in PORTS])
         self.assertIn("DOMAIN-SUFFIX,claude.ai," + self.group, rules)
         self.assertEqual(rules[-1], "DOMAIN-SUFFIX,example.test,DIRECT")
@@ -250,19 +274,19 @@ class WebRTCRulesTests(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertEqual((self.base / "webrtc-policy").read_text().strip(), "reject")
         self.assertTrue(all(rule.endswith(",REJECT")
-                            for rule in self.evaluate_script()["rules"][:3]))
+                            for rule in self.evaluate_script()["rules"][len(LAN_RULES):len(LAN_RULES) + 3]))
         self.responses["/rules"] = {"rules": expected_rules(self.group, "reject")}
         self.responses["/proxies"]["proxies"]["node"]["udp"] = False
         self.assertEqual(self.run_helper().returncode, 0)
         self.assertEqual(self.run_helper("write").returncode, 0)
-        self.assertTrue(self.evaluate_script()["rules"][0].endswith(",REJECT"))
+        self.assertTrue(self.evaluate_script()["rules"][len(LAN_RULES)].endswith(",REJECT"))
 
     def test_switching_back_to_proxy_replaces_managed_block(self):
         self.assertEqual(self.run_helper("write", "reject").returncode, 0)
         self.assertEqual(self.run_helper("write", "proxy").returncode, 0)
         rules = self.evaluate_script()["rules"]
-        self.assertEqual(len(rules), len(DOMAINS) + 6)
-        self.assertTrue(all(r.endswith("," + self.group) for r in rules[:3]))
+        self.assertEqual(len(rules), len(DOMAINS) + len(LAN_RULES) + 6)
+        self.assertTrue(all(r.endswith("," + self.group) for r in rules[len(LAN_RULES):len(LAN_RULES) + 3]))
 
     def test_existing_script_runs_first_and_repeated_write_is_idempotent(self):
         script = self.profiles / "Script.js"
@@ -302,7 +326,7 @@ class WebRTCRulesTests(unittest.TestCase):
         self.group = 'Proxy "one" \\ 中文'
         self.responses["/proxies"]["proxies"][self.group] = {"type": "Selector", "now": "node", "all": ["node"]}
         self.assertEqual(self.run_helper("write").returncode, 0)
-        self.assertTrue(self.evaluate_script()["rules"][0].endswith("," + self.group))
+        self.assertTrue(self.evaluate_script()["rules"][len(LAN_RULES)].endswith("," + self.group))
 
     def test_ambiguous_old_marker_aborts_without_overwriting_script(self):
         merge = self.profiles / "Merge.yaml"

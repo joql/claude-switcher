@@ -165,6 +165,10 @@ DOMAINS = (
     "intercomassets.com",
 )
 PORTS = (3478, 5349, 19302)
+LAN_DIRECT_NETWORKS = (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+    "fc00::/7", "fe80::/10",
+)
 # Only these exact native process names may bypass the UDP port policy.
 # Browsers, Claude processes, wildcards and path/name regexes are never exempt.
 UDP_DIRECT_PROCESSES = ("ToDesk_Session", "ToDesk_Service", "ToDesk", "ToDesk_Session_Proxy")
@@ -338,6 +342,14 @@ def udp_direct_exception(rule):
     return False
 
 
+def lan_direct_exception(rule):
+    return (isinstance(rule, dict)
+            and str(rule.get("type", "")).upper() == "IPCIDR"
+            and rule.get("payload") in LAN_DIRECT_NETWORKS
+            and rule.get("proxy") == "DIRECT"
+            and (rule.get("extra") or {}).get("disabled") is not True)
+
+
 def verify_runtime(clash_dir, group, policy):
     base, secret = controller_config(clash_dir)
     state = {
@@ -352,9 +364,14 @@ def verify_runtime(clash_dir, group, policy):
     if not isinstance(rules, list):
         fail("Clash /rules 返回格式异常")
     offset = 0
-    while offset < len(rules) and udp_direct_exception(rules[offset]):
+    has_todesk_exception = False
+    for rule in rules:
+        if not lan_direct_exception(rule):
+            if not udp_direct_exception(rule):
+                break
+            has_todesk_exception = True
         offset += 1
-    if offset and str(state["configs"].get("find-process-mode", "strict")).lower() not in {"strict", "always"}:
+    if has_todesk_exception and str(state["configs"].get("find-process-mode", "strict")).lower() not in {"strict", "always"}:
         fail("ToDesk UDP 例外需要启用进程识别")
     rules = rules[offset:]
     expected = expected_rules()
@@ -369,7 +386,7 @@ def verify_runtime(clash_dir, group, policy):
                     or payload != "NETWORK,UDP,DSTPORT," + str(value)
                     or rule.get("proxy") != target
                     or (rule.get("extra") or {}).get("disabled") is True):
-                fail("运行规则未按策略置顶:UDP/" + str(value) + "（前面仅允许指定 ToDesk 进程的 UDP 直连例外）")
+                fail("运行规则未按策略置顶:UDP/" + str(value) + "（前面仅允许指定局域网和 ToDesk UDP 直连例外）")
         else:
             rule = rules[index]
             if (not isinstance(rule, dict)
@@ -390,6 +407,10 @@ def rule_strings(group, policy):
 def managed_block(group, policy):
     encoded = json.dumps(rule_strings(group, policy), ensure_ascii=False)
     group_json = json.dumps(group, ensure_ascii=False)
+    lan_rules_json = json.dumps([
+        f"IP-CIDR{'6' if ':' in network else ''},{network},DIRECT,no-resolve"
+        for network in LAN_DIRECT_NETWORKS
+    ])
     direct_rules_json = json.dumps([
         f"AND,(({a}),({b})),DIRECT"
         for process in UDP_DIRECT_PROCESSES
@@ -400,6 +421,7 @@ def managed_block(group, policy):
 ;(function () {{
   const originalMain = main;
   const pinnedRules = {encoded};
+  const lanDirectRules = {lan_rules_json};
   const localDirectRules = ["DOMAIN,localhost.weixin.qq.com,DIRECT", "DOMAIN-SUFFIX,duodiantong.net,DIRECT"];
   const group = {group_json};
   const allowedDirectRules = new Set({direct_rules_json});
@@ -411,7 +433,7 @@ def managed_block(group, policy):
     if (result.rules !== undefined && !Array.isArray(result.rules)) throw new Error(\"claude-switcher: rules must be an array\");
     const rules = result.rules || [];
     const exceptions = [...new Set(rules.filter(isDirectException))];
-    result.rules = exceptions.concat(pinnedRules, localDirectRules, rules.filter((rule) => !isDirectException(rule) && !pinnedRules.includes(rule) && !localDirectRules.includes(rule)));
+    result.rules = lanDirectRules.concat(exceptions, pinnedRules, localDirectRules, rules.filter((rule) => !lanDirectRules.includes(rule) && !isDirectException(rule) && !pinnedRules.includes(rule) && !localDirectRules.includes(rule)));
     const dns = result.dns === undefined ? {{}} : result.dns;
     if (!dns || typeof dns !== "object" || Array.isArray(dns)) throw new Error("claude-switcher: dns must be an object");
     if (dns["fake-ip-filter-mode"] && dns["fake-ip-filter-mode"] !== "blacklist") throw new Error("claude-switcher: local DNS exceptions require blacklist fake-ip-filter-mode");
