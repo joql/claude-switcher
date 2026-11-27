@@ -88,7 +88,7 @@ esac
         result = subprocess.run(["/bin/bash", str(SCRIPT), "status"], env=self.env,
                                 capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.strip(), "current=none hasA=0 hasB=0")
+        self.assertEqual(result.stdout.strip(), "current=none hasA=0 hasB=0 hasC=0")
         self.assertTrue((self.home / ".claude-switcher/accounts").is_dir())
 
     def test_private_config_and_credentials_do_not_enter_output_or_argv(self):

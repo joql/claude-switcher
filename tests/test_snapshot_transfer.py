@@ -60,6 +60,17 @@ class SnapshotTransferTests(unittest.TestCase):
         self.assertFalse((home2 / ".claude-switcher" / "accounts" / "A"
                           / ".claude-switcher-snapshot.json").exists())
 
+    def test_c_roundtrip_restores_snapshot(self):
+        (self.accounts / "C").mkdir()
+        (self.accounts / "C/marker").write_text("account-c")
+        result = self.export(target="C")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        home2 = self.root / "home2"
+        result = self.run_core("snapshot-import", str(self.image), "C", "--password-stdin",
+                               password=PASSWORD, home=home2)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((home2 / ".claude-switcher/accounts/C/marker").read_text(), "account-c")
+
     def test_wrong_password_leaves_no_snapshot(self):
         self.assertEqual(self.export().returncode, 0)
         home2 = self.root / "home2"

@@ -33,7 +33,7 @@ private final class Fixture {
         core = root.appendingPathComponent("fake-core.sh")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try write("audit", auditKeys.map { "\($0)=ok" }.joined(separator: "\n") + "\n")
-        try write("status", "current=A hasA=1 hasB=0\n")
+        try write("status", "current=A hasA=1 hasB=0 hasC=0\n")
         try write("switch-output", "OK:已切换到账号 B\n")
         try write("core-script", """
         #!/bin/bash
@@ -91,6 +91,30 @@ struct MenuBarModelTests {
             let name = CommandLine.arguments[1]
             let f = try Fixture()
             switch name {
+            case "account_c_status":
+                let vm = f.vm()
+                try f.write("status", "current=C hasA=1 hasB=1 hasC=1\n")
+                vm.start(); try f.idle(vm)
+                try expect(vm.current == "C" && vm.hasC && vm.supportsC, "应识别 C 当前账号与存档")
+            case "account_c_switch":
+                let vm = f.vm()
+                vm.start(); try f.idle(vm)
+                try f.write("switch-output", "OK:已切换到账号 C\n")
+                vm.switchTo("C"); try f.idle(vm)
+                try expect(vm.phase == .done && f.calls.contains("switch C"), "应支持切换 C")
+                try expect(vm.note.contains("C 号首次使用"), "应显示 C 初始化提示")
+            case "legacy_core_accounts":
+                let vm = f.vm()
+                try f.write("status", "current=A hasA=1 hasB=0\n")
+                vm.start(); try f.idle(vm)
+                try expect(vm.current == "A" && !vm.hasC && !vm.supportsC, "旧核心仍能读取 A/B")
+                vm.switchTo("C"); pump(0.05)
+                try expect(!f.calls.contains("switch C"), "旧核心应阻断 C 切换")
+            case "invalid_account_c_status":
+                let vm = f.vm()
+                try f.write("status", "current=C hasA=1 hasB=1 hasC=bad\n")
+                vm.start(); try f.idle(vm)
+                try expect(vm.current == "未知" && !vm.supportsC, "非法 C 状态不能通过")
             case "startup_once":
                 let vm = f.vm()
                 vm.start(); vm.start()

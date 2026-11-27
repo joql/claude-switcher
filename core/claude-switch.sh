@@ -1,6 +1,6 @@
 #!/bin/bash
 # Claude 账号切换器 - 核心脚本 (通用版)
-# 用法: claude-switch.sh check | status | switch A|B | checkdetail | fix | set-region | update [--check|--auto] | diagnose-proxy
+# 用法: claude-switch.sh check | status | switch A|B|C | checkdetail | fix | set-region | update [--check|--auto] | diagnose-proxy
 set -u
 export LC_ALL=en_US.UTF-8
 
@@ -343,11 +343,50 @@ def udp_direct_exception(rule):
 
 
 def lan_direct_exception(rule):
-    return (isinstance(rule, dict)
-            and str(rule.get("type", "")).upper() == "IPCIDR"
+    return (str(rule.get("type", "")).upper() == "IPCIDR"
             and rule.get("payload") in LAN_DIRECT_NETWORKS
-            and rule.get("proxy") == "DIRECT"
-            and (rule.get("extra") or {}).get("disabled") is not True)
+            and rule.get("proxy") == "DIRECT")
+
+
+# STUN hostnames must stay in sync with core/stun-probe.py. Domain rules ahead
+# of the UDP guards are safe only when they cannot match these or Claude traffic.
+STUN_DOMAINS = ("stun.miwifi.com", "stun.chat.bilibili.com",
+                "stun.l.google.com", "stun.cloudflare.com")
+
+
+def rule_scope(rule):
+    kind = str(rule.get("type", "")).upper().replace("-", "").replace("_", "")
+    payload = str(rule.get("payload", "")).strip().lower()
+    if kind in {"DOMAIN", "DOMAINSUFFIX"} and re.fullmatch(
+            r"[a-z0-9_](?:[a-z0-9_.-]*[a-z0-9_])?", payload) and ".." not in payload:
+        return ("domain" if kind == "DOMAIN" else "suffix"), payload
+    if kind == "AND":
+        match = re.fullmatch(r"NETWORK,UDP,DSTPORT,([0-9]+)", norm(payload))
+        if match:
+            return "port", int(match.group(1))
+    return "unknown", payload
+
+
+def domain_overlap(scope, domain, protected, suffix=True):
+    # An exact parent domain does not match its children. Two suffix ranges
+    # overlap when either is a parent of the other, including label boundaries.
+    if scope == "domain":
+        return domain == protected or (suffix and domain.endswith("." + protected))
+    return (domain == protected or protected.endswith("." + domain)
+            or (suffix and domain.endswith("." + protected)))
+
+
+def rule_may_overlap(scope, payload, kind, value):
+    if scope == "port":
+        return kind == "domain" or payload == value
+    if scope in {"domain", "suffix"}:
+        if kind == "domain":
+            return domain_overlap(scope, payload, value)
+        return (any(domain_overlap(scope, payload, domain) for domain in DOMAINS)
+                or any(domain_overlap(scope, payload, host, suffix=False) for host in STUN_DOMAINS))
+    # MATCH, IP, process, rule-set and logical expressions remain conservative.
+    # Routing to the expected group is safe regardless of their matching scope.
+    return True
 
 
 def verify_runtime(clash_dir, group, policy):
@@ -363,38 +402,44 @@ def verify_runtime(clash_dir, group, policy):
     rules = state["rules"].get("rules")
     if not isinstance(rules, list):
         fail("Clash /rules 返回格式异常")
-    offset = 0
-    has_todesk_exception = False
-    for rule in rules:
-        if not lan_direct_exception(rule):
-            if not udp_direct_exception(rule):
-                break
-            has_todesk_exception = True
-        offset += 1
-    if has_todesk_exception and str(state["configs"].get("find-process-mode", "strict")).lower() not in {"strict", "always"}:
-        fail("ToDesk UDP 例外需要启用进程识别")
-    rules = rules[offset:]
-    expected = expected_rules()
-    if len(rules) < len(expected):
-        fail("运行中的规则数量不足")
-    for index, (kind, value) in enumerate(expected):
-        if kind == "port":
-            rule = rules[index]
-            target = "REJECT" if policy == "reject" else group
-            payload = norm(rule.get("payload", "")) if isinstance(rule, dict) else ""
-            if (not isinstance(rule, dict) or str(rule.get("type", "")).upper() != "AND"
-                    or payload != "NETWORK,UDP,DSTPORT," + str(value)
-                    or rule.get("proxy") != target
-                    or (rule.get("extra") or {}).get("disabled") is True):
-                fail("运行规则未按策略置顶:UDP/" + str(value) + "（前面仅允许指定局域网和 ToDesk UDP 直连例外）")
-        else:
-            rule = rules[index]
-            if (not isinstance(rule, dict)
-                    or str(rule.get("type", "")).upper().replace("_", "-") not in {"DOMAIN-SUFFIX", "DOMAINSUFFIX"}
-                    or str(rule.get("payload", "")).strip().lower() != value
-                    or rule.get("proxy") != group
-                    or (rule.get("extra") or {}).get("disabled") is True):
-                fail("运行规则未按策略置顶:" + value)
+    pending = expected_rules()
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            fail("运行规则格式异常:第 %d 条" % (index + 1))
+        if (rule.get("extra") or {}).get("disabled") is True:
+            continue
+        if lan_direct_exception(rule):
+            continue
+        if udp_direct_exception(rule):
+            if str(state["configs"].get("find-process-mode", "strict")).lower() not in {"strict", "always"}:
+                fail("ToDesk UDP 例外需要启用进程识别")
+            continue
+        scope, payload = rule_scope(rule)
+        destination = rule.get("proxy")
+        remaining = []
+        for kind, value in pending:
+            target = "REJECT" if kind == "port" and policy == "reject" else group
+            # Required protection must still exist even if an earlier rule uses the same group.
+            if (scope == ("port" if kind == "port" else "suffix")
+                    and payload == value and destination == target):
+                continue
+            if rule_may_overlap(scope, payload, kind, value):
+                # Managed UDP rejection is intentional even for Claude domain traffic.
+                managed_reject = (kind == "domain" and scope == "port"
+                                  and payload in PORTS and policy == "reject"
+                                  and destination == "REJECT")
+                if destination != target and not managed_reject:
+                    label = "UDP/" + str(value) if kind == "port" else value
+                    fail("运行规则冲突:第 %d 条 %s,%s → %s 可能抢先匹配 %s（预期 %s）" % (
+                        index + 1, rule.get("type", "未知"), rule.get("payload", ""),
+                        destination, label, target))
+            remaining.append((kind, value))
+        pending = remaining
+        if not pending:
+            break
+    if pending:
+        missing = ["UDP/" + str(value) if kind == "port" else value for kind, value in pending]
+        fail("运行规则缺少有效保护:" + ", ".join(missing))
     return state
 
 
@@ -1347,7 +1392,7 @@ open_safe() {
 
 snapshot_export() {
     target="${1:-}"; out="${2:-}"; mode="${3:-}"
-    case "$target" in A|B) ;; *) echo "FAIL:账号必须是 A 或 B"; return 1 ;; esac
+    case "$target" in A|B|C) ;; *) echo "FAIL:账号必须是 A、B 或 C"; return 1 ;; esac
     [ -d "$BASE/accounts/$target" ] || { echo "FAIL:账号$target 没有已归档快照(先切换一次让它归档)"; return 1; }
     [ -n "$out" ] || { echo "FAIL:请指定导出文件路径"; return 1; }
     case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
@@ -1395,7 +1440,7 @@ EOF
 
 snapshot_import() {
     file="${1:-}"; target="${2:-}"; mode="${3:-}"
-    case "$target" in A|B) ;; *) echo "FAIL:账号必须是 A 或 B"; return 1 ;; esac
+    case "$target" in A|B|C) ;; *) echo "FAIL:账号必须是 A、B 或 C"; return 1 ;; esac
     [ -f "$file" ] || { echo "FAIL:找不到镜像文件: $file"; return 1; }
     [ -e "$BASE/accounts/$target" ] && { echo "FAIL:账号$target 已有快照,请先导出或删除后再导入"; return 1; }
 
@@ -1430,7 +1475,7 @@ import json, sys
 with open(sys.argv[1], encoding="utf-8") as f: meta = json.load(f)
 assert meta.get("format") == "claude-switcher-snapshot"
 assert meta.get("version") == 1
-assert meta.get("account") in ("A", "B")
+assert meta.get("account") in ("A", "B", "C")
 sys.exit(0 if meta.get("account") == sys.argv[2] else 1)
 PY
     then
@@ -1457,7 +1502,8 @@ status() {
     cur="none"; [ -f "$BASE/current" ] && cur=$(cat "$BASE/current")
     hasA=0; [ -d "$BASE/accounts/A" ] && hasA=1
     hasB=0; [ -d "$BASE/accounts/B" ] && hasB=1
-    echo "current=$cur hasA=$hasA hasB=$hasB"
+    hasC=0; [ -d "$BASE/accounts/C" ] && hasC=1
+    echo "current=$cur hasA=$hasA hasB=$hasB hasC=$hasC"
 }
 
 quit_claude() {
@@ -1536,6 +1582,7 @@ copy_tree() {
 
 switch_to() {
     target="$1"
+    case "$target" in A|B|C) ;; *) echo "FAIL:账号必须是 A、B 或 C"; return 1 ;; esac
     cur="none"; [ -f "$BASE/current" ] && cur=$(cat "$BASE/current")
     just_archived=0
 
@@ -1606,5 +1653,5 @@ case "${1:-}" in
     snapshot-import) snapshot_import "${2:-}" "${3:-}" "${4:-}" ;;
     write-merge-rules) write_merge_rules ;;  # 隐藏入口:供安装器调用,保证两处合并逻辑一致
     fingerprint) fingerprint ;;
-    *) echo "用法: claude-switch.sh check|checkdetail|fix|status|switch A|B|set-region|update [--check|--auto]|update-check|fingerprint|snapshot-export <A|B> <file>|snapshot-import <file> <A|B>|open-safe <url>|cli-info|diagnose-proxy [--proxy URL|--config FILE]"; exit 2 ;;
+    *) echo "用法: claude-switch.sh check|checkdetail|fix|status|switch A|B|C|set-region|update [--check|--auto]|update-check|fingerprint|snapshot-export <A|B|C> <file>|snapshot-import <file> <A|B|C>|open-safe <url>|cli-info|diagnose-proxy [--proxy URL|--config FILE]"; exit 2 ;;
 esac
